@@ -1,0 +1,6 @@
+﻿CoppeliaSim
+scenes
+scripts
+*.md
+Dockerfile
+requirements.txt
