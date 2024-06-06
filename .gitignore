@@ -2,4 +2,3 @@
 scripts
 *.md
 Dockerfile
-requirements.txt
