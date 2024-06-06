@@ -1,4 +1,5 @@
 import cv2
+from datetime import datetime
 
 from data_files import FIGRURES_DIR
 from robobo_interface import (
@@ -19,13 +20,30 @@ def test_emotions(rob: IRobobo):
     rob.set_led(LedId.FRONTCENTER, LedColor.GREEN)
 
 
-def test_move_and_wheel_reset(rob: IRobobo):
-    rob.move_blocking(100, 100, 1000)
+def test_move_and_wheel_reset(rob):
+    demo = True
+
+    # Find wall and turn to side
+    if demo:
+        while rob.read_irs()[4] < 90:
+            print(rob.read_irs()[4])
+            rob.move(100, 100, 100) 
+        rob.move_blocking(0, -100, 700)
+        rob.move_blocking(100, 100, 1000)
+
+    else:
+    # Touch wall and back off
+        while rob.read_irs()[4] < 200:
+            print(rob.read_irs()[4])
+            rob.move(100, 100, 100) 
+        rob.move_blocking(-100, -100, 1000)
+    
+
     print("before reset: ", rob.read_wheels())
     rob.reset_wheels()
     rob.sleep(1)
     print("after reset: ", rob.read_wheels())
-
+    
 
 def test_sensors(rob: IRobobo):
     print("IRS data: ", rob.read_irs())
@@ -46,10 +64,10 @@ def test_phone_movement(rob: IRobobo):
 
 def test_sim(rob: SimulationRobobo):
     print(rob.get_sim_time())
-    print(rob.is_running())
+    # print("is running?: ", rob.is_running())
     rob.stop_simulation()
     print(rob.get_sim_time())
-    print(rob.is_running())
+    # print("is running?: ", rob.is_running())
     rob.play_simulation()
     print(rob.get_sim_time())
     print(rob.get_position())
@@ -63,16 +81,17 @@ def test_hardware(rob: HardwareRobobo):
 def run_all_actions(rob: IRobobo):
     if isinstance(rob, SimulationRobobo):
         rob.play_simulation()
-    test_emotions(rob)
+
+    # test_emotions(rob)
     test_sensors(rob)
     test_move_and_wheel_reset(rob)
     if isinstance(rob, SimulationRobobo):
         test_sim(rob)
 
-    if isinstance(rob, HardwareRobobo):
-        test_hardware(rob)
+    # if isinstance(rob, HardwareRobobo):
+    #     test_hardware(rob)
 
-    test_phone_movement(rob)
+    # test_phone_movement(rob)
 
     if isinstance(rob, SimulationRobobo):
         rob.stop_simulation()
