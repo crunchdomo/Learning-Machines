@@ -32,8 +32,10 @@ def test_move_and_wheel_reset(rob):
     def record_ir_data():
         current_time = time.time() - start_time
         ir_values = rob.read_irs()
+        print(f"IR Values: {ir_values}")  # Debugging: Print IR sensor values
+        if len(ir_values) != 8:
+            print(f"Unexpected number of IR sensor readings: {len(ir_values)}")
         ir_data.append([current_time] + ir_values)
-        print(ir_values)
 
     # Find wall and turn to side
     if demo:
@@ -55,35 +57,42 @@ def test_move_and_wheel_reset(rob):
         record_ir_data()
 
     # Convert IR data to DataFrame
-    columns = ['Time'] + [f'IR_{i}' for i in range(len(ir_data[0]) - 1)]
-    ir_df = pd.DataFrame(ir_data, columns=columns)
+    if ir_data:  # Ensure ir_data is not empty
+        expected_columns = 9  # 1 for time + 8 IR sensors
+        if len(ir_data[0]) != expected_columns:
+            print(f"Unexpected data structure: {len(ir_data[0])} columns found.")
 
-    # Plot the IR data
-    plt.figure(figsize=(10, 6))
-    for i in range(1, len(columns)):
-        sns.lineplot(x=ir_df['Time'], y=ir_df[columns[i]], label=columns[i])
-    plt.title('IR Sensor Data Over Time')
-    plt.xlabel('Time (s)')
-    plt.ylabel('IR Sensor Reading')
-    plt.legend()
-    plt.grid(True)
+        columns = ['Time'] + [f'IR_{i}' for i in range(8)]
+        ir_df = pd.DataFrame(ir_data, columns=columns)
 
-    # Save the plot
-    plt.savefig(FIGRURES_DIR / 'ir_sensor_data_plot.png')
-    plt.close()
+        # Plot the IR data  
+        plt.figure(figsize=(10, 6))
+        for i in range(1, len(columns)):
+            sns.lineplot(x=ir_df['Time'], y=ir_df[columns[i]], label=columns[i])
+        plt.title('IR Sensor Data Over Time')
+        plt.xlabel('Time (s)')
+        plt.ylabel('IR Sensor Reading')
+        plt.legend()
+        plt.grid(True)
 
-    # Plot the IR data
-    plt.figure(figsize=(10, 6))
-    sns.lineplot(data=ir_data)
-    plt.title('IR Sensor Data Over Time')
-    plt.xlabel('Time Step')
-    plt.ylabel('IR Sensor Reading')
-    plt.grid(True)
+        # Save the plot
+        plt.savefig(FIGRURES_DIR / 'ir_sensor_data_plot.png')
+        plt.close()
 
-    # Save the plot
-    plt.savefig(FIGRURES_DIR / 'ir_sensor_data.png')
-    plt.close()
-    
+        # Plot the IR data
+        plt.figure(figsize=(10, 6))
+        sns.lineplot(data=ir_df.drop(columns=['Time']))
+        plt.title('IR Sensor Data Over Time')
+        plt.xlabel('Time Step')
+        plt.ylabel('IR Sensor Reading')
+        plt.grid(True)
+
+        # Save the plot
+        plt.savefig(FIGRURES_DIR / 'ir_sensor_data.png')
+        plt.close()
+    else:
+        print("No IR data recorded.")
+
 
 def test_sensors(rob: IRobobo):
     print("IRS data: ", rob.read_irs())
