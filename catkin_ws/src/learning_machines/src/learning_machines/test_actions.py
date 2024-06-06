@@ -38,19 +38,22 @@ def test_move_and_wheel_reset(rob):
         ir_data.append([current_time] + ir_values)
 
     # Find wall and turn to side
+    x = 0
     if demo:
-        while rob.read_irs()[4] < 90:
+        while rob.read_irs()[4] < 20 and x < 100:
             record_ir_data()
+            x+=1
             rob.move(100, 100, 100)
         record_ir_data()
-        rob.move_blocking(0, -100, 700)
+        rob.move_blocking(0, -100, 800)
         record_ir_data()
         rob.move_blocking(100, 100, 1000)
         record_ir_data()
     else:
         # Touch wall and back off
-        while rob.read_irs()[4] < 200:
+        while rob.read_irs()[4] < 200 and x < 100:
             record_ir_data()
+            x+=1
             rob.move(100, 100, 100)
         record_ir_data()
         rob.move_blocking(-100, -100, 1000)
