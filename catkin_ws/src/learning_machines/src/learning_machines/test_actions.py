@@ -40,10 +40,10 @@ def test_move_and_wheel_reset(rob):
     # Find wall and turn to side
     x = 0
     if demo:
-        while rob.read_irs()[4] < 20 and x < 100:
+        while rob.read_irs()[4] < 20 and x < 200:
             record_ir_data()
             x+=1
-            rob.move(100, 100, 100)
+            rob.move(60, 60, 100)
         record_ir_data()
         rob.move_blocking(0, -100, 800)
         record_ir_data()
