@@ -40,14 +40,19 @@ def test_move_and_wheel_reset(rob):
         while rob.read_irs()[4] < 90:
             record_ir_data()
             rob.move(100, 100, 100)
+        record_ir_data()
         rob.move_blocking(0, -100, 700)
+        record_ir_data()
         rob.move_blocking(100, 100, 1000)
+        record_ir_data()
     else:
         # Touch wall and back off
         while rob.read_irs()[4] < 200:
             record_ir_data()
             rob.move(100, 100, 100)
+        record_ir_data()
         rob.move_blocking(-100, -100, 1000)
+        record_ir_data()
 
     # Convert IR data to DataFrame
     columns = ['Time'] + [f'IR_{i}' for i in range(len(ir_data[0]) - 1)]
