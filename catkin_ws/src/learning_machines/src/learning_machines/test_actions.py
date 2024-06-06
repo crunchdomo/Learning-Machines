@@ -1,5 +1,9 @@
 import cv2
+import time
 from datetime import datetime
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pandas as pd
 
 from data_files import FIGRURES_DIR
 from robobo_interface import (
@@ -22,27 +26,58 @@ def test_emotions(rob: IRobobo):
 
 def test_move_and_wheel_reset(rob):
     demo = True
+    ir_data = []
+    start_time = time.time()
+
+    def record_ir_data():
+        current_time = time.time() - start_time
+        ir_values = rob.read_irs()
+        ir_data.append([current_time] + ir_values)
+        print(ir_values)
 
     # Find wall and turn to side
     if demo:
         while rob.read_irs()[4] < 90:
-            print(rob.read_irs()[4])
-            rob.move(100, 100, 100) 
+            record_ir_data()
+            rob.move(100, 100, 100)
         rob.move_blocking(0, -100, 700)
         rob.move_blocking(100, 100, 1000)
-
     else:
-    # Touch wall and back off
+        # Touch wall and back off
         while rob.read_irs()[4] < 200:
-            print(rob.read_irs()[4])
-            rob.move(100, 100, 100) 
+            record_ir_data()
+            rob.move(100, 100, 100)
         rob.move_blocking(-100, -100, 1000)
-    
 
-    print("before reset: ", rob.read_wheels())
-    rob.reset_wheels()
-    rob.sleep(1)
-    print("after reset: ", rob.read_wheels())
+    # Convert IR data to DataFrame
+    columns = ['Time'] + [f'IR_{i}' for i in range(len(ir_data[0]) - 1)]
+    ir_df = pd.DataFrame(ir_data, columns=columns)
+
+    # Plot the IR data
+    plt.figure(figsize=(10, 6))
+    for i in range(1, len(columns)):
+        sns.lineplot(x=ir_df['Time'], y=ir_df[columns[i]], label=columns[i])
+    plt.title('IR Sensor Data Over Time')
+    plt.xlabel('Time (s)')
+    plt.ylabel('IR Sensor Reading')
+    plt.legend()
+    plt.grid(True)
+
+    # Save the plot
+    plt.savefig(FIGRURES_DIR / 'ir_sensor_data_plot.png')
+    plt.close()
+
+    # Plot the IR data
+    plt.figure(figsize=(10, 6))
+    sns.lineplot(data=ir_data)
+    plt.title('IR Sensor Data Over Time')
+    plt.xlabel('Time Step')
+    plt.ylabel('IR Sensor Reading')
+    plt.grid(True)
+
+    # Save the plot
+    plt.savefig(FIGRURES_DIR / 'ir_sensor_data.png')
+    plt.close()
     
 
 def test_sensors(rob: IRobobo):
