@@ -3,3 +3,4 @@ scripts
 *.md
 Dockerfile
 *.DS_Store
+models/components
