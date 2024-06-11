@@ -92,7 +92,7 @@ class HardwareRobobo(IRobobo):
     Implements the IRobobo interface, and shouldn't really be used outside of that.
 
     Specific hardware documentation of the robobo can be found at the scratch part of the Robobo docs:
-    - Actuation (Robot): http://education.theroboboproject.com/en/scratch3/base-actuation-blocks
+    - Actuation (Robot): http://education.theroboboproject.com/en/scratch3/base-actuation-blockmove_blockings
     - Sensors (Robot): http://education.theroboboproject.com/en/scratch3/base-sensing-blocks
     - Actuation (Smartphone): http://education.theroboboproject.com/en/scratch3/smartphone-actuation-blocks
     - Sensors (Smartphone): http://education.theroboboproject.com/en/scratch3/smartphone-sensing-blocks
