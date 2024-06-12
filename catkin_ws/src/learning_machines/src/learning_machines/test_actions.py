@@ -3,20 +3,20 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from collections import deque, namedtuple
-from itertools import count
 import random
 import numpy as np
 import os
+from itertools import count
 
 from data_files import FIGRURES_DIR
 
-# Define the DQN model
-class DQN(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(DQN, self).__init__()
+# Define the neural network model
+class SpeedPredictor(nn.Module):
+    def __init__(self, input_dim):
+        super(SpeedPredictor, self).__init__()
         self.fc1 = nn.Linear(input_dim, 128)
         self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, output_dim)
+        self.fc3 = nn.Linear(128, 2)  # Output two values: left_speed and right_speed
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
@@ -37,18 +37,16 @@ class ReplayMemory:
     def __len__(self):
         return len(self.memory)
 
-
-# Define the DQNAgent class
-class DQNAgent:
-    def __init__(self, state_dim, action_dim, memory_capacity, batch_size, gamma, lr):
+# Define the Agent class
+class SpeedAgent:
+    def __init__(self, state_dim, memory_capacity, batch_size, gamma, lr):
         self.state_dim = state_dim
-        self.action_dim = action_dim
         self.memory = ReplayMemory(memory_capacity)
         self.batch_size = batch_size
         self.gamma = gamma
         self.lr = lr
-        self.policy_net = DQN(state_dim, action_dim).to(device)
-        self.target_net = DQN(state_dim, action_dim).to(device)
+        self.policy_net = SpeedPredictor(state_dim).to(device)
+        self.target_net = SpeedPredictor(state_dim).to(device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
@@ -62,12 +60,11 @@ class DQNAgent:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
         if sample > self.epsilon:
             with torch.no_grad():
-                action = self.policy_net(state).argmax().view(1, 1)
-            return action
+                speeds = self.policy_net(state)
+            return speeds
         else:
-            action = torch.tensor([[random.randrange(self.action_dim)]], device=device, dtype=torch.long)
-            return action
-
+            speeds = torch.tensor([[random.uniform(-100, 100), random.uniform(-100, 100)]], device=device, dtype=torch.float)
+            return speeds
 
     def update_target_network(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -79,15 +76,15 @@ class DQNAgent:
         batch = Transition(*zip(*transitions))
 
         state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action).long()
+        speeds_batch = torch.cat(batch.speeds)
         reward_batch = torch.cat(batch.reward)
         next_state_batch = torch.cat(batch.next_state)
-        state_action_values = self.policy_net(state_batch).gather(1, action_batch)
+        state_speeds_values = self.policy_net(state_batch)
 
         next_state_values = self.target_net(next_state_batch).max(1)[0].detach()
-        expected_state_action_values = (next_state_values * self.gamma) + reward_batch
+        expected_state_speeds_values = (next_state_values * self.gamma) + reward_batch
 
-        loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
+        loss = F.smooth_l1_loss(state_speeds_values, expected_state_speeds_values.unsqueeze(1))
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -116,15 +113,13 @@ def get_reward(rob, start_pos, movement):
     reward += (distance * 10)
     return torch.tensor([reward], device=device)
 
-def run__training_simulation(rob, agent, num_episodes):
+def run_training_simulation(rob, agent, num_episodes):
     best_reward = -float('inf')
     model_path = FIGRURES_DIR / 'best.model'
-    # os.makedirs(os.path.dirname(model_path), exist_ok=True)
     if os.path.exists(model_path):
         agent.policy_net.load_state_dict(torch.load(model_path))
         agent.target_net.load_state_dict(agent.policy_net.state_dict())
         print("Loaded saved model.")
-
 
     for episode in range(num_episodes):
         print(f'Starting episode {episode}')
@@ -134,13 +129,11 @@ def run__training_simulation(rob, agent, num_episodes):
         total_reward = 0
 
         for t in count():
-            action = agent.select_action(state)
-            left_speed = (action[0].item() * 2 - 1) * 100
-            right_speed = (action[0].item() * 2 - 1) * 100
+            speeds = agent.select_action(state)
+            left_speed, right_speed = speeds[0, 0].item(), speeds[0, 1].item()
             rob.move_blocking(left_speed, right_speed, 100)
             next_state = get_state(rob)
 
-            # figure out movement direction based on wheel values
             if left_speed > 0 and right_speed > 0:
                 movement = 'forward'
             elif left_speed < 0 and right_speed < 0:
@@ -151,30 +144,28 @@ def run__training_simulation(rob, agent, num_episodes):
             reward = get_reward(rob, start_position, movement)
             total_reward += reward.item()
 
-            agent.memory.push(Transition(state, action, next_state, reward))
+            agent.memory.push(Transition(state, speeds, next_state, reward))
             state = next_state
 
             agent.optimize_model()
 
             if t > 20:
                 rob.stop_simulation()
-
                 break
+
         agent.update_target_network()
         if total_reward > best_reward:
             best_reward = total_reward
             torch.save(agent.policy_net.state_dict(), model_path)
             print(f"Saved best model with reward: {best_reward}")
 
+
 # Initialize the agent and run the simulation
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+Transition = namedtuple('Transition', ('state', 'speeds', 'next_state', 'reward'))
 state_dim = 8
-action_dim = 2
 
-agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
+agent = SpeedAgent(state_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
 
-# ADAM PLEASE MAINTAIN THIS STRUCTURE TO AVOID AN ERROR. JUST CHANGE THE FUNCTION CALLED IN RUN_ALL_ACTIONS AS REQUIRED
 def run_all_actions(rob):
-    run__training_simulation(rob, agent, num_episodes=10)
-
+    run_training_simulation(rob, agent, num_episodes=30)
