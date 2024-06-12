@@ -37,6 +37,8 @@ class DQN(nn.Module):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         return self.fc3(x)
+    
+
 
 
 class ReplayMemory:
@@ -81,6 +83,10 @@ class DQNAgent:
         else:
             action = torch.tensor([[random.randrange(self.action_dim)]], device=device, dtype=torch.long)
             return action
+        
+    
+    def update_target_network(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
 
     def optimize_model(self):
         if len(self.memory) < self.batch_size:
@@ -93,10 +99,11 @@ class DQNAgent:
         reward_batch = torch.cat(batch.reward)
         next_state_batch = torch.cat(batch.next_state)
 
-        print("State Batch:", state_batch)
-        print("Action Batch:", action_batch)
-        print("Reward Batch:", reward_batch)
-        print("Next State Batch:", next_state_batch)
+
+        # print("State Batch:", state_batch)
+        # print("Action Batch:", action_batch)
+        # print("Reward Batch:", reward_batch)
+        # print("Next State Batch:", next_state_batch)
 
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
 
@@ -148,7 +155,7 @@ def get_reward(rob: IRobobo, start_pos):
     reward = 0
     IRs = rob.read_irs()
     for ir in IRs:
-        if ir > 200:
+        if ir > 100:
             reward -= 10
 
     current_pos = rob.get_position()
@@ -164,9 +171,13 @@ def get_reward(rob: IRobobo, start_pos):
     return torch.tensor([reward], device=device)
 
 def is_done(rob: IRobobo):
-    print)"ROBOTO IS OVER BUDDY")
+    print("ROBOTO IS OVER BUDDY")
     current_pos = rob.get_position()
     # Terminate if the robot is out of bounds
+    IRs = rob.read_irs()
+    for ir in IRs: 
+        if ir > 150: 
+            return True
     if is_out_of_bounds(current_pos):
         return True
     return False
