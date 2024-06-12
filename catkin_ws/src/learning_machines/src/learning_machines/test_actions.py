@@ -29,7 +29,7 @@ class DQN(nn.Module):
 # Define the ReplayMemory class
 class ReplayMemory:
     def __init__(self, capacity):
-        self.memory = deque(maxlen=capacity)
+        self.memory = deque([], maxlen=capacity)
 
     def push(self, transition):
         self.memory.append(transition)
@@ -64,11 +64,9 @@ class DQNAgent:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
         if sample > self.epsilon:
             with torch.no_grad():
-                action = self.policy_net(state).argmax().view(1, 1)
-            return action
+                return self.policy_net(state).view(-1)[:2]  # Select the first two values
         else:
-            action = torch.tensor([[random.randrange(self.action_dim)]], device=device, dtype=torch.long)
-            return action
+            return torch.tensor([[random.uniform(-100, 100), random.uniform(-100, 100)]], device=device, dtype=torch.long)
 
     def update_target_network(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
@@ -76,16 +74,44 @@ class DQNAgent:
     def optimize_model(self):
         if len(self.memory) < self.batch_size:
             return
+
         transitions = self.memory.sample(self.batch_size)
         batch = Transition(*zip(*transitions))
+
+        # Assuming batch is a named tuple with fields: state, action, reward, next_state
         state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action).long()
+        action_batch = torch.cat(batch.action).view(-1, 1).long()  # Ensure action_batch has the correct dimensions
         reward_batch = torch.cat(batch.reward)
         next_state_batch = torch.cat(batch.next_state)
+
+        # Check the shapes of the tensors
+        print(f"state_batch shape: {state_batch.shape}")
+        print(f"action_batch shape: {action_batch.shape}")
+        print(f"reward_batch shape: {reward_batch.shape}")
+        print(f"next_state_batch shape: {next_state_batch.shape}")
+
+        # Ensure all batches have the same size
+        assert state_batch.shape[0] == action_batch.shape[0] == reward_batch.shape[0] == next_state_batch.shape[0], "Batch size mismatch"
+
+        # Forward pass through the policy network
+        policy_net_output = self.policy_net(state_batch)
+        print(f"policy_net_output shape: {policy_net_output.shape}")
+
+        # Ensure the policy_net_output has the correct shape
+        assert policy_net_output.shape[0] == state_batch.shape[0], "Batch size mismatch between state_batch and policy_net_output"
+        assert policy_net_output.shape[1] > action_batch.max().item(), "Action index out of bounds"
+
+        # Gather the state-action values
+        state_action_values = policy_net_output.gather(1, action_batch)
+        print(f"state_action_values shape: {state_action_values.shape}")
+
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
+
         next_state_values = self.target_net(next_state_batch).max(1)[0].detach()
         expected_state_action_values = (next_state_values * self.gamma) + reward_batch
+
         loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
+
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -96,21 +122,27 @@ def get_state(rob):
     state = torch.tensor([ir_values], device=device, dtype=torch.float)
     return state
 
-def get_reward(rob, start_pos):
+def get_reward(rob, start_pos, movement):
     reward = 0
     IRs = rob.read_irs()
     for ir in IRs:
-        if ir > 20:
-            reward -= 10
+        if ir > 1000:
+            reward -= 100
+    if movement == 'forward':
+        reward += 10
+    elif movement == 'turn':
+        reward += 5
+    else:
+        reward += -20
     current_pos = rob.get_position()
     distance = np.linalg.norm(np.array([current_pos.x, current_pos.y, current_pos.z]) - np.array([start_pos.x, start_pos.y, start_pos.z]))
-    reward += (distance * 100)
+    reward += (distance * 10)
     return torch.tensor([reward], device=device)
 
-def run__training_simulation(rob, agent, num_episodes):
+def run_training_simulation(rob, agent, num_episodes):
     best_reward = -float('inf')
     model_path = FIGRURES_DIR / 'best.model'
-    # os.makedirs(os.path.dirname(model_path), exist_ok=True)
+
     if os.path.exists(model_path):
         agent.policy_net.load_state_dict(torch.load(model_path))
         agent.target_net.load_state_dict(agent.policy_net.state_dict())
@@ -125,26 +157,39 @@ def run__training_simulation(rob, agent, num_episodes):
 
         for t in count():
             action = agent.select_action(state)
-            left_speed = (action[0].item() * 2 - 1) * 100
-            right_speed = (action[0].item() * 2 - 1) * 100
+            action = action.view(-1)
+            left_speed = action[0].item()
+            right_speed = action[1].item()
+
             rob.move_blocking(left_speed, right_speed, 100)
             next_state = get_state(rob)
-            reward = get_reward(rob, start_position)
+
+            # figure out movement direction based on wheel values
+            if left_speed > 0 and right_speed > 0:
+                movement = 'forward'
+            elif left_speed < 0 and right_speed < 0:
+                movement = 'back'
+            else:
+                movement = 'turn'
+
+            reward = get_reward(rob, start_position, movement)
             total_reward += reward.item()
+
             agent.memory.push(Transition(state, action, next_state, reward))
             state = next_state
+
             agent.optimize_model()
 
-            if t > 20:
+            if t > 10:
                 rob.stop_simulation()
                 break
-
-        agent.update_target_network()
 
         if total_reward > best_reward:
             best_reward = total_reward
             torch.save(agent.policy_net.state_dict(), model_path)
             print(f"Saved best model with reward: {best_reward}")
+
+        agent.update_target_network()
 
 # Initialize the agent and run the simulation
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -155,4 +200,4 @@ agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, ga
 
 # ADAM PLEASE MAINTAIN THIS STRUCTURE TO AVOID AN ERROR. JUST CHANGE THE FUNCTION CALLED IN RUN_ALL_ACTIONS AS REQUIRED
 def run_all_actions(rob):
-    run__training_simulation(rob, agent, num_episodes=1000)
+    run_training_simulation(rob, agent, num_episodes=100)
