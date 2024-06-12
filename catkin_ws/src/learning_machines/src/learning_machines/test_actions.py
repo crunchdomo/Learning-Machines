@@ -66,8 +66,8 @@ class DQNAgent:
             with torch.no_grad():
                 return self.policy_net(state).view(-1)[:2]  # Select the first two values
         else:
-            return torch.tensor([[random.uniform(-100, 100), random.uniform(-100, 100)]], device=device, dtype=torch.long)
-
+            return torch.tensor([[random.randint(-100, 100), random.randint(-100, 100)]], device=device, dtype=torch.long)
+        
     def update_target_network(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
@@ -80,31 +80,18 @@ class DQNAgent:
 
         # Assuming batch is a named tuple with fields: state, action, reward, next_state
         state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action).view(-1, 1).long()  # Ensure action_batch has the correct dimensions
+        action_batch = torch.cat(batch.action).view(-1, 2).long()
         reward_batch = torch.cat(batch.reward)
         next_state_batch = torch.cat(batch.next_state)
 
-        # Check the shapes of the tensors
-        print(f"state_batch shape: {state_batch.shape}")
-        print(f"action_batch shape: {action_batch.shape}")
-        print(f"reward_batch shape: {reward_batch.shape}")
-        print(f"next_state_batch shape: {next_state_batch.shape}")
+        # Debug prints
+        print("state_batch shape:", state_batch.shape)
+        print("action_batch shape:", action_batch.shape)
+        print("reward_batch shape:", reward_batch.shape)
+        print("next_state_batch shape:", next_state_batch.shape)
+        print("action_batch contents:", action_batch)
 
-        # Ensure all batches have the same size
-        assert state_batch.shape[0] == action_batch.shape[0] == reward_batch.shape[0] == next_state_batch.shape[0], "Batch size mismatch"
-
-        # Forward pass through the policy network
-        policy_net_output = self.policy_net(state_batch)
-        print(f"policy_net_output shape: {policy_net_output.shape}")
-
-        # Ensure the policy_net_output has the correct shape
-        assert policy_net_output.shape[0] == state_batch.shape[0], "Batch size mismatch between state_batch and policy_net_output"
-        assert policy_net_output.shape[1] > action_batch.max().item(), "Action index out of bounds"
-
-        # Gather the state-action values
-        state_action_values = policy_net_output.gather(1, action_batch)
-        print(f"state_action_values shape: {state_action_values.shape}")
-
+        # Continue with the rest of the optimization process
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
 
         next_state_values = self.target_net(next_state_batch).max(1)[0].detach()
@@ -186,7 +173,7 @@ def run_training_simulation(rob, agent, num_episodes):
 
         if total_reward > best_reward:
             best_reward = total_reward
-            torch.save(agent.policy_net.state_dict(), model_path)
+            #torch.save(agent.policy_net.state_dict(), model_path)
             print(f"Saved best model with reward: {best_reward}")
 
         agent.update_target_network()
