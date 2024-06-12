@@ -1,31 +1,17 @@
-#!/usr/bin/env python3
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from collections import deque
-import random
-import time
-from datetime import datetime
-import seaborn as sns
-import matplotlib.pyplot as plt
-import pandas as pd
-from collections import namedtuple
+from collections import deque, namedtuple
 from itertools import count
+import random
 import numpy as np
+import os
 
 from data_files import FIGRURES_DIR
-from robobo_interface import (
-    IRobobo,
-    Emotion,
-    LedId,
-    LedColor,
-    SoundEmotion,
-    SimulationRobobo,
-    HardwareRobobo,
-)
 
 
+# Define the DQN model
 class DQN(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(DQN, self).__init__()
@@ -37,13 +23,11 @@ class DQN(nn.Module):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         return self.fc3(x)
-    
 
-
-
+# Define the ReplayMemory class
 class ReplayMemory:
     def __init__(self, capacity):
-        self.memory = deque(maxlen=capacity)
+        self.memory = deque([], maxlen=capacity)
 
     def push(self, transition):
         self.memory.append(transition)
@@ -53,8 +37,8 @@ class ReplayMemory:
 
     def __len__(self):
         return len(self.memory)
-    
 
+# Define the DQNAgent class
 class DQNAgent:
     def __init__(self, state_dim, action_dim, memory_capacity, batch_size, gamma, lr):
         self.state_dim = state_dim
@@ -74,37 +58,39 @@ class DQNAgent:
         self.epsilon_decay = 0.995
 
     def select_action(self, state):
-        sample = random.random()
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        if sample > self.epsilon:
+        if np.random.random() > self.epsilon:
             with torch.no_grad():
                 action = self.policy_net(state).argmax().view(1, 1)
-                return action
-        else:
-            action = torch.tensor([[random.randrange(self.action_dim)]], device=device, dtype=torch.long)
             return action
+        else:
+            return torch.tensor([[random.randrange(self.action_dim)]], device=device, dtype=torch.long)
+
         
-    
     def update_target_network(self):
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
     def optimize_model(self):
         if len(self.memory) < self.batch_size:
             return
+
         transitions = self.memory.sample(self.batch_size)
         batch = Transition(*zip(*transitions))
 
+        # Assuming batch is a named tuple with fields: state, action, reward, next_state
         state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action).long()  # Convert to int64
+        action_batch = torch.cat(batch.action).long()#.view(-1, 2).long()
         reward_batch = torch.cat(batch.reward)
         next_state_batch = torch.cat(batch.next_state)
 
+        # Debug prints
+        print("state_batch shape:", state_batch.shape)
+        print("action_batch shape:", action_batch.shape)
+        print("reward_batch shape:", reward_batch.shape)
+        print("next_state_batch shape:", next_state_batch.shape)
+        print("action_batch contents:", action_batch)
 
-        # print("State Batch:", state_batch)
-        # print("Action Batch:", action_batch)
-        # print("Reward Batch:", reward_batch)
-        # print("Next State Batch:", next_state_batch)
-
+        # Continue with the rest of the optimization process
         state_action_values = self.policy_net(state_batch).gather(1, action_batch)
 
         next_state_values = self.target_net(next_state_batch).max(1)[0].detach()
@@ -116,103 +102,88 @@ class DQNAgent:
         loss.backward()
         self.optimizer.step()
 
+# Define helper functions
+def get_state(rob):
+    ir_values = rob.read_irs()
+    state = torch.tensor([ir_values], device=device, dtype=torch.float)
+    return state
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+def get_reward(rob, start_pos, movement):
+    reward = 0
+    IRs = rob.read_irs()
+    for ir in IRs:
+        if ir > 1000:
+            reward -= 100
+    if movement == 'forward':
+        reward += 10
+    elif movement == 'turn':
+        reward += 5
+    else:
+        reward += -20
+    current_pos = rob.get_position()
+    distance = np.linalg.norm(np.array([current_pos.x, current_pos.y, current_pos.z]) - np.array([start_pos.x, start_pos.y, start_pos.z]))
+    reward += (distance * 10)
+    return torch.tensor([reward], device=device)
 
-def run_simulation(rob: IRobobo, agent: DQNAgent, num_episodes: int):
+def run_training_simulation(rob, agent, num_episodes):
+    best_reward = -float('inf')
+    model_path = FIGRURES_DIR / 'best.model'
+
+    if os.path.exists(model_path):
+        agent.policy_net.load_state_dict(torch.load(model_path))
+        agent.target_net.load_state_dict(agent.policy_net.state_dict())
+        print("Loaded saved model.")
+
     for episode in range(num_episodes):
-        print(f'staring episode{episode}')
+        print(f'Starting episode {episode}')
         rob.play_simulation()
         state = get_state(rob)
         start_position = rob.get_position()
+        total_reward = 0
+
         for t in count():
             action = agent.select_action(state)
-            left_speed = (action[0].item() * 2 - 1) * 100  # Scale action to wheel speed
-            right_speed = (action[0].item() * 2 - 1) * 100  # Scale action to wheel speed
-            rob.move_blocking(left_speed, right_speed, 100)  # Example action
+            # action = action.view(-1)
+            left_speed = action[0].item()
+            right_speed = action[0].item()
+
+            rob.move_blocking(left_speed, right_speed, 100)
             next_state = get_state(rob)
-            reward = get_reward(rob, start_position)
-            # done = is_done(rob)
+
+            # figure out movement direction based on wheel values
+            if left_speed > 0 and right_speed > 0:
+                movement = 'forward'
+            elif left_speed < 0 and right_speed < 0:
+                movement = 'back'
+            else:
+                movement = 'turn'
+
+            reward = get_reward(rob, start_position, movement)
+            total_reward += reward.item()
 
             agent.memory.push(Transition(state, action, next_state, reward))
             state = next_state
 
             agent.optimize_model()
-            if t > 100:
+
+            if t > 10:
                 rob.stop_simulation()
-                # print("STOPPING CONDITIONS")
                 break
+
+        if total_reward > best_reward:
+            best_reward = total_reward
+            #torch.save(agent.policy_net.state_dict(), model_path)
+            print(f"Saved best model with reward: {best_reward}")
+
         agent.update_target_network()
 
-
-def get_state(rob: IRobobo):
-    ir_values = rob.read_irs()
-    # print(ir_values)
-    state = torch.tensor([ir_values], device=device, dtype=torch.float)
-    return state
-
-def get_reward(rob: IRobobo, start_pos):
-    reward = 0
-    IRs = rob.read_irs()
-    for ir in IRs:
-        if ir > 100:
-            reward -= 10
-
-    current_pos = rob.get_position()
-    
-    distance = np.linalg.norm(np.array([current_pos.x, current_pos.y, current_pos.z]) - np.array([start_pos.x, start_pos.y, start_pos.z]))
-
-    reward += (distance*10)
-
-    # Add penalty for falling off the stage
-    if is_out_of_bounds(current_pos):
-        reward -= 100
-
-    return torch.tensor([reward], device=device)
-
-def is_done(rob: IRobobo):
-    # print("ROBOTO IS OVER BUDDY")
-    current_pos = rob.get_position()
-    # Terminate if the robot is out of bounds
-    IRs = rob.read_irs()
-    for ir in IRs: 
-        if ir > 150: 
-            return True
-    if is_out_of_bounds(current_pos):
-        return True
-    return False
-
-def is_out_of_bounds(position):
-    # Define the boundaries of the stage
-    x_min, x_max = -10, 10
-    y_min, y_max = -10, 10
-    z_min, z_max = 0, 10  # Assuming the stage is at z=0 and has a height of 10 units
-
-    if not (x_min <= position.x <= x_max and y_min <= position.y <= y_max and z_min <= position.z <= z_max):
-        return True
-    return False
-
-# Initialize the agent
-state_dim = 8  # Number of IR sensors
-action_dim = 2  # Number of actions (left and right wheel speeds)
+# Initialize the agent and run the simulation
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+state_dim = 8
+action_dim = 2
 agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
 
-# Run the simulation
-run_simulation(SimulationRobobo(), agent, num_episodes=10)
-
-
-def test_run():
-
-    # Initialize the agent
-    state_dim = 8  # Number of IR sensors
-    action_dim = 2  # Number of actions (left and right wheel speeds)
-    agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
-
-    # Run the simulation
-    run_simulation(SimulationRobobo(), agent, num_episodes=1000)
-
-
-# NEEDS TO DO: 
-# 1) Get model saved 
-# 2) Manage Errors
+# ADAM PLEASE MAINTAIN THIS STRUCTURE TO AVOID AN ERROR. JUST CHANGE THE FUNCTION CALLED IN RUN_ALL_ACTIONS AS REQUIRED
+def run_all_actions(rob):
+    run_training_simulation(rob, agent, num_episodes=100)
