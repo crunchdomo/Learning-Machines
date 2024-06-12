@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -119,9 +120,9 @@ def run_simulation(rob: IRobobo, agent: DQNAgent, num_episodes: int):
         start_position = rob.get_position()
         for t in count():
             action = agent.select_action(state)
-            left_speed = (action[0].item() * 2 - 1)  # Scale action to wheel speed
-            right_speed = (action[0].item() * 2 - 1)   # Scale action to wheel speed
-            rob.move(left_speed, right_speed, 100)  # Example action
+            left_speed = (action[0].item() * 2 - 1) * 100  # Scale action to wheel speed
+            right_speed = (action[0].item() * 2 - 1) * 100  # Scale action to wheel speed
+            rob.move_blocking(left_speed, right_speed, 100)  # Example action
             next_state = get_state(rob)
             reward = get_reward(rob, start_position)
             done = is_done(rob)
@@ -163,6 +164,7 @@ def get_reward(rob: IRobobo, start_pos):
     return torch.tensor([reward], device=device)
 
 def is_done(rob: IRobobo):
+    print)"ROBOTO IS OVER BUDDY")
     current_pos = rob.get_position()
     # Terminate if the robot is out of bounds
     if is_out_of_bounds(current_pos):
@@ -185,7 +187,7 @@ action_dim = 2  # Number of actions (left and right wheel speeds)
 agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
 
 # Run the simulation
-run_simulation(SimulationRobobo(), agent, num_episodes=1000)
+run_simulation(SimulationRobobo(), agent, num_episodes=10)
 
 
 def test_run():
