@@ -1,17 +1,9 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-from collections import deque
-import random
+import cv2
 import time
 from datetime import datetime
 import seaborn as sns
 import matplotlib.pyplot as plt
 import pandas as pd
-from collections import namedtuple
-from itertools import count
-import numpy as np
 
 from data_files import FIGRURES_DIR
 from robobo_interface import (
@@ -24,181 +16,138 @@ from robobo_interface import (
     HardwareRobobo,
 )
 
+'''
+THis is a backup of the original hardcoded stuff as reference
 
-class DQN(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(DQN, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, output_dim)
+'''
 
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+def test_emotions(rob: IRobobo):
+    rob.set_emotion(Emotion.HAPPY)
+    rob.talk("Hello")
+    rob.play_emotion_sound(SoundEmotion.PURR)
+    rob.set_led(LedId.FRONTCENTER, LedColor.GREEN)
 
 
-class ReplayMemory:
-    def __init__(self, capacity):
-        self.memory = deque(maxlen=capacity)
+def test_move_and_wheel_reset(rob):
+    demo = True
+    ir_data = []
+    start_time = time.time()
 
-    def push(self, transition):
-        self.memory.append(transition)
+    def record_ir_data():
+        current_time = time.time() - start_time
+        ir_values = rob.read_irs()
+        print(f"IR Values: {ir_values}")  # Debugging: Print IR sensor values
+        if len(ir_values) != 8:
+            print(f"Unexpected number of IR sensor readings: {len(ir_values)}")
+        ir_data.append([current_time] + ir_values)
 
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
+    # Find wall and turn to side
+    x = 0
+    if demo:
+        while rob.read_irs()[4] < 20 and x < 200:
+            record_ir_data()
+            x+=1
+            rob.move(60, 60, 100)
+        record_ir_data()
+        rob.move_blocking(0, -100, 800)
+        record_ir_data()
+        rob.move_blocking(100, 100, 1000)
+        record_ir_data()
+    else:
+        # Touch wall and back off
+        while rob.read_irs()[4] < 200 and x < 100:
+            record_ir_data()
+            x+=1
+            rob.move(100, 100, 100)
+        record_ir_data()
+        rob.move_blocking(-100, -100, 1000)
+        record_ir_data()
 
-    def __len__(self):
-        return len(self.memory)
-    
+    # Convert IR data to DataFrame
+    if ir_data:  # Ensure ir_data is not empty
+        expected_columns = 9  # 1 for time + 8 IR sensors
+        if len(ir_data[0]) != expected_columns:
+            print(f"Unexpected data structure: {len(ir_data[0])} columns found.")
 
-class DQNAgent:
-    def __init__(self, state_dim, action_dim, memory_capacity, batch_size, gamma, lr):
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self.memory = ReplayMemory(memory_capacity)
-        self.batch_size = batch_size
-        self.gamma = gamma
-        self.lr = lr
-        self.policy_net = DQN(state_dim, action_dim).to(device)
-        self.target_net = DQN(state_dim, action_dim).to(device)
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.target_net.eval()
-        self.steps_done = 0
-        self.epsilon = 0.9
-        self.epsilon_min = 0.05
-        self.epsilon_decay = 0.995
+        columns = ['Time'] + [f'IR_{i}' for i in range(8)]
+        ir_df = pd.DataFrame(ir_data, columns=columns)
 
-    def select_action(self, state):
-        sample = random.random()
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        if sample > self.epsilon:
-            with torch.no_grad():
-                action = self.policy_net(state).argmax().view(1, 1)
-                return action
-        else:
-            action = torch.tensor([[random.randrange(self.action_dim)]], device=device, dtype=torch.long)
-            return action
+        # Plot the IR data  
+        plt.figure(figsize=(10, 6))
+        for i in range(1, len(columns)):
+            sns.lineplot(x=ir_df['Time'], y=ir_df[columns[i]], label=columns[i])
+        plt.title('IR Sensor Data Over Time')
+        plt.xlabel('Time (s)')
+        plt.ylabel('IR Sensor Reading')
+        plt.legend()
+        plt.grid(True)
 
-    def optimize_model(self):
-        if len(self.memory) < self.batch_size:
-            return
-        transitions = self.memory.sample(self.batch_size)
-        batch = Transition(*zip(*transitions))
+        # Save the plot
+        plt.savefig(FIGRURES_DIR / 'ir_sensor_data_plot.png')
+        plt.close()
 
-        state_batch = torch.cat(batch.state)
-        action_batch = torch.cat(batch.action).long()  # Convert to int64
-        reward_batch = torch.cat(batch.reward)
-        next_state_batch = torch.cat(batch.next_state)
+        # Plot the IR data
+        plt.figure(figsize=(10, 6))
+        sns.lineplot(data=ir_df.drop(columns=['Time']))
+        plt.title('IR Sensor Data Over Time')
+        plt.xlabel('Time Step')
+        plt.ylabel('IR Sensor Reading')
+        plt.grid(True)
 
-        print("State Batch:", state_batch)
-        print("Action Batch:", action_batch)
-        print("Reward Batch:", reward_batch)
-        print("Next State Batch:", next_state_batch)
-
-        state_action_values = self.policy_net(state_batch).gather(1, action_batch)
-
-        next_state_values = self.target_net(next_state_batch).max(1)[0].detach()
-        expected_state_action_values = (next_state_values * self.gamma) + reward_batch
-
-        loss = F.smooth_l1_loss(state_action_values, expected_state_action_values.unsqueeze(1))
-
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        # Save the plot
+        plt.savefig(FIGRURES_DIR / 'ir_sensor_data.png')
+        plt.close()
+    else:
+        print("No IR data recorded.")
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+def test_sensors(rob: IRobobo):
+    print("IRS data: ", rob.read_irs())
+    image = rob.get_image_front()
+    cv2.imwrite(str(FIGRURES_DIR / "photo.png"), image)
+    print("Phone pan: ", rob.read_phone_pan())
+    print("Phone tilt: ", rob.read_phone_tilt())
+    print("Current acceleration: ", rob.read_accel())
+    print("Current orientation: ", rob.read_orientation())
 
-def run_simulation(rob: IRobobo, agent: DQNAgent, num_episodes: int):
-    for episode in range(num_episodes):
+
+def test_phone_movement(rob: IRobobo):
+    rob.set_phone_pan_blocking(20, 100)
+    print("Phone pan after move to 20: ", rob.read_phone_pan())
+    rob.set_phone_tilt_blocking(50, 100)
+    print("Phone tilt after move to 50: ", rob.read_phone_tilt())
+
+
+def test_sim(rob: SimulationRobobo):
+    print(rob.get_sim_time())
+    # print("is running?: ", rob.is_running())
+    rob.stop_simulation()
+    print(rob.get_sim_time())
+    # print("is running?: ", rob.is_running())
+    rob.play_simulation()
+    print(rob.get_sim_time())
+    print(rob.get_position())
+
+
+def test_hardware(rob: HardwareRobobo):
+    print("Phone battery level: ", rob.read_phone_battery())
+    print("Robot battery level: ", rob.read_robot_battery())
+
+
+def run_all_actions(rob: IRobobo):
+    if isinstance(rob, SimulationRobobo):
         rob.play_simulation()
-        state = get_state(rob)
-        start_position = rob.get_position()
-        for t in count():
-            action = agent.select_action(state)
-            left_speed = (action[0].item() * 2 - 1)  # Scale action to wheel speed
-            right_speed = (action[0].item() * 2 - 1)   # Scale action to wheel speed
-            rob.move(left_speed, right_speed, 100)  # Example action
-            next_state = get_state(rob)
-            reward = get_reward(rob, start_position)
-            done = is_done(rob)
 
-            agent.memory.push(Transition(state, action, next_state, reward))
-            state = next_state
+    # test_emotions(rob)
+    test_sensors(rob)
+    test_move_and_wheel_reset(rob)
+    if isinstance(rob, SimulationRobobo):
+        test_sim(rob)
 
-            agent.optimize_model()
-            if done:
-                rob.stop_simulation()
-                print("STOPPING CONDITIONSS")
-                break
-        agent.update_target_network()
+    # if isinstance(rob, HardwareRobobo):
+    #     test_hardware(rob)
 
+    # test_phone_movement(rob)
 
-def get_state(rob: IRobobo):
-    ir_values = rob.read_irs()
-    print(ir_values)
-    state = torch.tensor([ir_values], device=device, dtype=torch.float)
-    return state
-
-def get_reward(rob: IRobobo, start_pos):
-    reward = 0
-    IRs = rob.read_irs()
-    for ir in IRs:
-        if ir > 200:
-            reward -= 10
-
-    current_pos = rob.get_position()
-    
-    distance = np.linalg.norm(np.array([current_pos.x, current_pos.y, current_pos.z]) - np.array([start_pos.x, start_pos.y, start_pos.z]))
-
-    reward += (distance*10)
-
-    # Add penalty for falling off the stage
-    if is_out_of_bounds(current_pos):
-        reward -= 100
-
-    return torch.tensor([reward], device=device)
-
-def is_done(rob: IRobobo):
-    current_pos = rob.get_position()
-    # Terminate if the robot is out of bounds
-    if is_out_of_bounds(current_pos):
-        return True
-    return False
-
-def is_out_of_bounds(position):
-    # Define the boundaries of the stage
-    x_min, x_max = -10, 10
-    y_min, y_max = -10, 10
-    z_min, z_max = 0, 10  # Assuming the stage is at z=0 and has a height of 10 units
-
-    if not (x_min <= position.x <= x_max and y_min <= position.y <= y_max and z_min <= position.z <= z_max):
-        return True
-    return False
-
-# Initialize the agent
-state_dim = 8  # Number of IR sensors
-action_dim = 2  # Number of actions (left and right wheel speeds)
-agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
-
-# Run the simulation
-run_simulation(SimulationRobobo(), agent, num_episodes=1000)
-
-
-def test_run():
-
-    # Initialize the agent
-    state_dim = 8  # Number of IR sensors
-    action_dim = 2  # Number of actions (left and right wheel speeds)
-    agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
-
-    # Run the simulation
-    run_simulation(SimulationRobobo(), agent, num_episodes=1000)
-
-
-# NEEDS TO DO: 
-# 1) Get model saved 
-# 2) Manage Errors
+    if isinstance(rob, SimulationRobobo):
+        rob.stop_simulation()

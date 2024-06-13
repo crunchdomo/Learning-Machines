@@ -9,9 +9,12 @@ from itertools import count
 import random
 import numpy as np
 import os
-
+import matplotlib.pyplot as plt
 from data_files import FIGRURES_DIR
-
+from robobo_interface import (
+    SimulationRobobo,
+    HardwareRobobo,
+)
 
 # Define the DQN model
 class DQN(nn.Module):
@@ -100,28 +103,43 @@ def get_state(rob):
     ir_values = rob.read_irs()
     return torch.tensor([ir_values], device=device, dtype=torch.float)
 
-def get_reward(p1, p2, movement, next_state):
+def get_reward(start, p1, p2, movement, rob):
     reward = 0
-    if movement == 'forward':
-        reward += 10
-    elif movement == 'turn':
-        reward += 1
-    else:
-        reward += -10
 
-    distance = np.linalg.norm(np.array([p2.x, p2.y, p2.z]) - np.array([p1.x, p1.y, p1.z]))
-    reward += (distance * 10)
+    IRs = rob.read_irs()
+    for ir in IRs:
+        if ir > 1000:
+            reward -= 100
+
+    if movement == 'forward':
+        reward += -10
+    elif movement == 'turn':
+        reward += 4
+    else:
+        reward -= 4
+
+    # distance = np.linalg.norm(np.array([p2.x, p2.y, p2.z]) - np.array([p1.x, p1.y, p1.z]))
+    # reward += (distance * 10)
     return torch.tensor([reward], device=device)
 
-def run__training_simulation(rob, agent, num_episodes):
+def plot_rewards(rewards, episode):
+    plt.figure()
+    plt.plot(rewards)
+    plt.xlabel('Episode')
+    plt.ylabel('Total Reward')
+    plt.title('Total Reward per Episode')
+    plt.savefig(FIGRURES_DIR / f'training_rewards.png')
+    plt.close()
+
+def run_training_simulation(rob, agent, num_episodes):
     best_reward = -float('inf')
     model_path = FIGRURES_DIR / 'best.model'
-    # os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    rewards = []
+
     if os.path.exists(model_path):
         agent.policy_net.load_state_dict(torch.load(model_path))
         agent.target_net.load_state_dict(agent.policy_net.state_dict())
         print("Loaded saved model.")
-
 
     for episode in range(num_episodes):
         print(f'Starting episode {episode}')
@@ -135,48 +153,87 @@ def run__training_simulation(rob, agent, num_episodes):
             action = agent.select_action(state)
             speed = action[0]
 
+            fastness = 40
+
             # Define movement based on single action value
             if speed >= 0.5:
-                left_speed = 100
-                right_speed = 100
+                left_speed = fastness
+                right_speed = fastness
                 movement = 'forward'
             elif 0 <= speed < 0.5:
-                left_speed = 100
-                right_speed = -100
+                left_speed = fastness
+                right_speed = -fastness
                 movement = 'turn'
             elif -0.5 <= speed < 0:
-                left_speed = -100
-                right_speed = 100
+                left_speed = -fastness
+                right_speed = fastness
                 movement = 'turn'
             else:
-                left_speed = -100
-                right_speed = -100
+                left_speed = -fastness
+                right_speed = -fastness
                 movement = 'back'
 
             rob.move_blocking(left_speed, right_speed, 100)
             next_state = get_state(rob)
             p2 = rob.get_position()
-            reward = get_reward(p1, p2, movement, next_state)
+            reward = get_reward(start_position, p1, p2, movement, rob)
             total_reward += reward.item()
-
             agent.memory.push(Transition(state, action, next_state, reward))
             state = next_state
-
-
-
             agent.optimize_model()
 
-            if t > 20:
+            if t > 50:
                 rob.stop_simulation()
-
                 break
 
-        print(f"Episode: {episode}, Reward: {reward[0]}")
+        print(f"Episode: {episode}, Reward: {total_reward}")
         agent.update_target_network()
+        rewards.append(total_reward)
+        plot_rewards(rewards, episode)
+
         if total_reward > best_reward:
             best_reward = total_reward
             torch.save(agent.policy_net.state_dict(), model_path)
             print(f"Saved best model with reward: {best_reward}")
+
+def run_trained_model(rob, agent):
+    model_path = FIGRURES_DIR / 'best.model'
+    
+    if os.path.exists(model_path):
+        agent.policy_net.load_state_dict(torch.load(model_path))
+        agent.target_net.load_state_dict(agent.policy_net.state_dict())
+        print("Loaded saved model.")
+    else:
+        print("No saved model found. Please train the model first.")
+        return
+
+    rob.play_simulation()
+    state = get_state(rob)
+    
+    for t in count():
+        action = agent.select_action(state)
+        speed = action[0]
+
+        if speed >= 0.5:
+            left_speed = 100
+            right_speed = 100
+        elif 0 <= speed < 0.5:
+            left_speed = 100
+            right_speed = -100
+        elif -0.5 <= speed < 0:
+            left_speed = -100
+            right_speed = 100
+        else:
+            left_speed = -100
+            right_speed = -100
+
+        rob.move_blocking(left_speed, right_speed, 100)
+        next_state = get_state(rob)
+        state = next_state
+
+        if t > 20:
+            rob.stop_simulation()
+            break
 
 # Initialize the agent and run the simulation
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -186,7 +243,21 @@ action_dim = 1
 
 agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
 
-# ADAM PLEASE MAINTAIN THIS STRUCTURE TO AVOID AN ERROR. JUST CHANGE THE FUNCTION CALLED IN RUN_ALL_ACTIONS AS REQUIRED
+# Toggle between testing or running a model
+train = True
 def run_all_actions(rob):
-    run__training_simulation(rob, agent, num_episodes=20)
+    if train:
+        run_training_simulation(rob, agent, num_episodes=250)
+    else:
+        run_trained_model(rob, agent)
 
+
+
+# Adam seeing as this ^^ is brokey for u from what i remember you probs just want to run some of this code instead
+
+# Create an instance of SimulationRobobo
+# robobo_instance = SimulationRobobo() # pick one
+# robobo_instance = HardwareRobobo()
+
+# # Pass the instance to the function
+# run_all_actions(robobo_instance)

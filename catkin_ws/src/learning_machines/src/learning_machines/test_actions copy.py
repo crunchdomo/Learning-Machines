@@ -166,3 +166,4 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def run_all_actions(rob):
     run_training(rob)
     print('done')
+    
