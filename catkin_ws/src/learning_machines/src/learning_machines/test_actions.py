@@ -12,6 +12,7 @@ import os
 import matplotlib.pyplot as plt
 from data_files import FIGRURES_DIR
 from robobo_interface import (
+    IRobobo,
     SimulationRobobo,
     HardwareRobobo,
 )
@@ -99,7 +100,7 @@ class DQNAgent:
         self.optimizer.step()
 
 # Define helper functions
-def get_state(rob):
+def get_state(rob: IRobobo):
     ir_values = rob.read_irs()
     return torch.tensor([ir_values], device=device, dtype=torch.float)
 
@@ -131,7 +132,7 @@ def plot_rewards(rewards, episode):
     plt.savefig(FIGRURES_DIR / f'training_rewards.png')
     plt.close()
 
-def run_training_simulation(rob, agent, num_episodes):
+def run_training_simulation(rob: IRobobo, agent, num_episodes):
     best_reward = -float('inf')
     model_path = FIGRURES_DIR / 'best.model'
     rewards = []
@@ -143,7 +144,8 @@ def run_training_simulation(rob, agent, num_episodes):
 
     for episode in range(num_episodes):
         print(f'Starting episode {episode}')
-        rob.play_simulation()
+        if isinstance(rob, SimulationRobobo):
+            rob.play_simulation()
         state = get_state(rob)
         start_position = rob.get_position()
         total_reward = 0
@@ -183,7 +185,8 @@ def run_training_simulation(rob, agent, num_episodes):
             agent.optimize_model()
 
             if t > 50:
-                rob.stop_simulation()
+                if isinstance(rob, SimulationRobobo):
+                    rob.stop_simulation()
                 break
 
         print(f"Episode: {episode}, Reward: {total_reward}")
@@ -196,7 +199,7 @@ def run_training_simulation(rob, agent, num_episodes):
             torch.save(agent.policy_net.state_dict(), model_path)
             print(f"Saved best model with reward: {best_reward}")
 
-def run_trained_model(rob, agent):
+def run_trained_model(rob: IRobobo, agent):
     model_path = FIGRURES_DIR / 'best.model'
     
     if os.path.exists(model_path):
@@ -206,8 +209,9 @@ def run_trained_model(rob, agent):
     else:
         print("No saved model found. Please train the model first.")
         return
-
-    rob.play_simulation()
+    
+    if isinstance(rob, SimulationRobobo):
+        rob.play_simulation()
     state = get_state(rob)
     
     for t in count():
@@ -231,8 +235,9 @@ def run_trained_model(rob, agent):
         next_state = get_state(rob)
         state = next_state
 
-        if t > 20:
-            rob.stop_simulation()
+        if t > 100:
+            if isinstance(rob, SimulationRobobo):
+                rob.stop_simulation()
             break
 
 # Initialize the agent and run the simulation
@@ -244,8 +249,8 @@ action_dim = 1
 agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
 
 # Toggle between testing or running a model
-train = True
-def run_all_actions(rob):
+train = False
+def run_all_actions(rob: IRobobo):
     if train:
         run_training_simulation(rob, agent, num_episodes=250)
     else:
