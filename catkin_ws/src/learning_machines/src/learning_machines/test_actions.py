@@ -113,7 +113,7 @@ def get_reward(start, p1, p2, movement, rob):
             reward -= 100
 
     if movement == 'forward':
-        reward += -10
+        reward += 10
     elif movement == 'turn':
         reward += 4
     else:
