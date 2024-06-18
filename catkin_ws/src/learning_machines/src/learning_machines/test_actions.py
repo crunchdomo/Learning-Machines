@@ -23,22 +23,6 @@ class PrintEpisodeCallback(BaseCallback):
             print(f"Episode: {self.episode_num}")
         return True
 
-class AdaptiveEntropyCallback(BaseCallback):
-    def __init__(self, verbose=0):
-        super(AdaptiveEntropyCallback, self).__init__(verbose)
-        self.entropy_coef = 0.01
-
-    def _on_step(self) -> bool:
-        if self.locals['dones'][0]:
-            reward = self.locals['rewards'][0]
-            if reward < 0:
-                self.entropy_coef *= 1.1  
-            else:
-                self.entropy_coef *= 0.9  
-            self.model.ent_coef = self.entropy_coef
-            print(f"Adjusted entropy coefficient: {self.entropy_coef}")
-        return True
-
 class SWACallback(BaseCallback):
     def __init__(self, swa_start, swa_freq, verbose=0):
         super(SWACallback, self).__init__(verbose)
@@ -140,16 +124,18 @@ policy_kwargs = dict(
     activation_fn=torch.nn.ReLU,
     normalize_images=True
 )
-model = PPO('MlpPolicy', env, verbose=1, learning_rate=3e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
+
+optimizer_kwargs = dict(weight_decay=1e-4)
+
+model = PPO('MlpPolicy', env, verbose=1, learning_rate=3e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs, optimizer_kwargs = optimizer_kwargs)
 
 max_episodes = 1000
 
 print_episode_callback = PrintEpisodeCallback(verbose=1)
 stop_training_callback = StopTrainingOnMaxEpisodes(max_episodes=max_episodes, verbose=1)
-adaptive_entropy_callback = AdaptiveEntropyCallback(verbose=1)
 swa_callback = SWACallback(swa_start=5000, swa_freq=1000, verbose=1)
 
-callback = [print_episode_callback, stop_training_callback, adaptive_entropy_callback, swa_callback]
+callback = [print_episode_callback, stop_training_callback, swa_callback]
 
 model.learn(total_timesteps=10000, callback=callback)
 
