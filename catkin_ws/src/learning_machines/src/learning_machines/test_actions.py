@@ -125,9 +125,7 @@ policy_kwargs = dict(
     normalize_images=True
 )
 
-optimizer_kwargs = dict(weight_decay=1e-4)
-
-model = PPO('MlpPolicy', env, verbose=1, learning_rate=3e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs, optimizer_kwargs = optimizer_kwargs)
+model = PPO('MlpPolicy', env, verbose=1, learning_rate=3e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
 
 max_episodes = 1000
 
