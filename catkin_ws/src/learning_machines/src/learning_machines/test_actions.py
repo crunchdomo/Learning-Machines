@@ -26,13 +26,13 @@ class RoboboEnv(gym.Env):
         return self.get_state()
 
     def step(self, action):
-        state = self.get_state()
+        state = self.get_state() # get the CV data for 1st state
         left_speed = action[0] * 100
         right_speed = action[1] * 100
 
         self.rob.move_blocking(left_speed, right_speed, 100)
-        next_state = self.get_state()
-        reward = self.get_reward(action, next_state)
+        next_state = self.get_state() # get the CV data for 2nd state
+        reward = self.get_reward(action, next_state) # use both states in reward to encourage moving closer
         self.total_reward += reward
         done = self.is_done(next_state, reward)
         self.recent_actions.append(tuple(action))
@@ -43,6 +43,7 @@ class RoboboEnv(gym.Env):
         return next_state, reward, done, {}
 
     def get_state(self):
+        # Get and return CV values
         ir_values = self.rob.read_irs()
         ir_values = np.clip(ir_values, 0, 10000)
         ir_values = ir_values / 10000.0
@@ -51,6 +52,8 @@ class RoboboEnv(gym.Env):
         return np.array(ir_values, dtype=np.float32)
 
     def get_reward(self, action, state):
+        # modify as required for openCV values in state
+
         if np.any(state > 0.7):
             return -10
 
@@ -65,7 +68,7 @@ class RoboboEnv(gym.Env):
         return reward
 
     def is_done(self, state, reward):
-        if np.any(state >= 1.0):
+        if np.any(state >= 1.0): # modify this to only evaluate states related to IR not CV e.g. the first 8
             self.rob.stop_simulation()
             return True
         if np.isnan(reward):
