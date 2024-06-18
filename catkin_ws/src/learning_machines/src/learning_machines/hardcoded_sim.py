@@ -219,7 +219,7 @@ def test_hardware(rob: HardwareRobobo):
     print("Robot battery level: ", rob.read_robot_battery())
 
 
-def test_task_2(rob):
+def test_IR_and_camera(rob):
     demo = True
     ir_data = []
     image_data = []
