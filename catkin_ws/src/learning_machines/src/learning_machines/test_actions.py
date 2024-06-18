@@ -4,7 +4,9 @@ import gym
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
-from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnMaxEpisodes
+from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnMaxEpisodes, EvalCallback
+from stable_baselines3.common.preprocessing import is_image_space
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from robobo_interface import SimulationRobobo, IRobobo
 import numpy as np
 from collections import deque
@@ -30,12 +32,36 @@ class AdaptiveEntropyCallback(BaseCallback):
         if self.locals['dones'][0]:
             reward = self.locals['rewards'][0]
             if reward < 0:
-                self.entropy_coef *= 1.1 
+                self.entropy_coef *= 1.1  
             else:
                 self.entropy_coef *= 0.9  
             self.model.ent_coef = self.entropy_coef
             print(f"Adjusted entropy coefficient: {self.entropy_coef}")
         return True
+
+class SWACallback(BaseCallback):
+    def __init__(self, swa_start, swa_freq, verbose=0):
+        super(SWACallback, self).__init__(verbose)
+        self.swa_start = swa_start
+        self.swa_freq = swa_freq
+        self.swa_weights = None
+        self.swa_n = 0
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps >= self.swa_start and self.num_timesteps % self.swa_freq == 0:
+            if self.swa_weights is None:
+                self.swa_weights = {k: v.clone() for k, v in self.model.policy.state_dict().items()}
+            else:
+                for k, v in self.model.policy.state_dict().items():
+                    self.swa_weights[k] += v
+            self.swa_n += 1
+        return True
+
+    def _on_training_end(self) -> None:
+        if self.swa_weights is not None:
+            for k, v in self.swa_weights.items():
+                self.swa_weights[k] = v / self.swa_n
+            self.model.policy.load_state_dict(self.swa_weights)
 
 class RoboboEnv(gym.Env):
     def __init__(self, rob: IRobobo):
@@ -109,19 +135,21 @@ robobo_instance = SimulationRobobo()
 env = DummyVecEnv([lambda: RoboboEnv(robobo_instance)])
 env = VecCheckNan(env, raise_exception=True)
 
-
 policy_kwargs = dict(
-    net_arch=[dict(pi=[64, 64], vf=[128, 128])]  
+    net_arch=dict(pi=[64, 64], vf=[128, 128]), 
+    activation_fn=torch.nn.ReLU,
+    normalize_images=True
 )
-model = PPO('MlpPolicy', env, verbose=1, learning_rate=3e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.2, ent_coef=0.01, policy_kwargs=policy_kwargs)
+model = PPO('MlpPolicy', env, verbose=1, learning_rate=3e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
 
 max_episodes = 1000
 
 print_episode_callback = PrintEpisodeCallback(verbose=1)
 stop_training_callback = StopTrainingOnMaxEpisodes(max_episodes=max_episodes, verbose=1)
 adaptive_entropy_callback = AdaptiveEntropyCallback(verbose=1)
+swa_callback = SWACallback(swa_start=5000, swa_freq=1000, verbose=1)
 
-callback = [print_episode_callback, stop_training_callback, adaptive_entropy_callback]
+callback = [print_episode_callback, stop_training_callback, adaptive_entropy_callback, swa_callback]
 
 model.learn(total_timesteps=10000, callback=callback)
 
