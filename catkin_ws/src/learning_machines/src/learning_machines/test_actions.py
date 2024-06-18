@@ -1,268 +1,120 @@
 #!/usr/bin/env python3
 
+import gym
 import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-from collections import deque, namedtuple
-from itertools import count
-import random
+from stable_baselines3 import DQN
+from stable_baselines3.common.vec_env import DummyVecEnv
+from robobo_interface import SimulationRobobo, IRobobo
 import numpy as np
-import os
-import matplotlib.pyplot as plt
+from collections import deque, namedtuple
 from data_files import FIGRURES_DIR
-from robobo_interface import (
-    IRobobo,
-    SimulationRobobo,
-    HardwareRobobo,
-)
 
-# Define the DQN model
-class DQN(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(DQN, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, output_dim)
+# Define a custom environment for Robobo
+class RoboboEnv(gym.Env):
+    def __init__(self, rob: IRobobo):
+        super(RoboboEnv, self).__init__()
+        self.rob = rob
+        self.action_space = gym.spaces.Discrete(4)  # Forward, Backward, Turn Left, Turn Right
+        self.observation_space = gym.spaces.Box(low=0, high=1000, shape=(8,), dtype=np.float32)
+        self.recent_actions = deque(maxlen=30)  # Memory to track recent actions
+        self.total_reward = 0  # Track total reward for the current episode
 
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return torch.tanh(self.fc3(x))
+    def reset(self):
+        self.rob.play_simulation()
+        self.recent_actions.clear()
+        self.total_reward = 0  # Reset total reward
+        return self.get_state()
 
-# Define the ReplayMemory class
-class ReplayMemory:
-    def __init__(self, capacity):
-        self.memory = deque(maxlen=capacity)
+    def step(self, action):
+        state = self.get_state()
+        if action == 0:
+            left_speed = 40
+            right_speed = 40
+            movement = 'forward'
+        elif action == 1:
+            left_speed = -40
+            right_speed = -40
+            movement = 'backward'
+        elif action == 2:
+            left_speed = 40
+            right_speed = -40
+            movement = 'turn_left'
+        elif action == 3:
+            left_speed = -40
+            right_speed = 40
+            movement = 'turn_right'
 
-    def push(self, transition):
-        self.memory.append(transition)
+        self.rob.move_blocking(left_speed, right_speed, 100)
+        next_state = self.get_state()
+        reward = self.get_reward(action, next_state, movement)
+        self.total_reward += reward  # Update total reward
+        done = self.is_done(next_state)
+        self.recent_actions.append(action)
+        return next_state, reward, done, {}
 
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
+    def get_state(self):
+        ir_values = self.rob.read_irs()
+        return np.array(ir_values, dtype=np.float32)
 
-    def __len__(self):
-        return len(self.memory)
+    def get_reward(self, action, state, movement):
+        if np.any(state > 1000):  # If too close to a wall, set reward to 0
+            return 0
 
+        if movement == 'forward':
+            reward = 20  # Stronger reward for moving forward
+        elif movement == 'backward':
+            reward = -50  # Stronger penalty for moving backward
+        elif movement in ['turn_left', 'turn_right']:
+            reward = 5  # Small reward for turning to encourage exploration
 
-# Define the DQNAgent class
-class DQNAgent:
-    def __init__(self, state_dim, action_dim, memory_capacity, batch_size, gamma, lr):
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self.memory = ReplayMemory(memory_capacity)
-        self.batch_size = batch_size
-        self.gamma = gamma
-        self.lr = lr
-        self.policy_net = DQN(state_dim, action_dim).to(device)
-        self.target_net = DQN(state_dim, action_dim).to(device)
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.target_net.eval()
-        self.steps_done = 0
-        self.epsilon = 0.9
-        self.epsilon_min = 0.05
-        self.epsilon_decay = 0.995
+        # Add penalty for repetitive actions
+        if self.recent_actions.count(action) > 2:
+            reward -= 5
 
-    def select_action(self, state):
-        sample = random.random()
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        if sample > self.epsilon:
-            with torch.no_grad():
-                speed = self.policy_net(state)
-            return speed
-        else:
-            speed = torch.tensor([[random.uniform(-1, 1)]], device=device, dtype=torch.float)
-            return speed
+        return reward
 
-    def update_target_network(self):
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+    def is_done(self, state):
+        # End the episode if any IR sensor value is too high (indicating proximity to a wall)
+        if np.any(state > 100):
+            self.rob.stop_simulation()
+            return True
+        return False
 
-    def optimize_model(self):
-        if len(self.memory) < self.batch_size:
-            return
-        transitions = self.memory.sample(self.batch_size)
-        batch = Transition(*zip(*transitions))
+    def render(self, mode='human'):
+        pass
 
-        state_batch = torch.cat(batch.state)
-        speed_batch = torch.cat(batch.speed)
-        reward_batch = torch.cat(batch.reward)
-        next_state_batch = torch.cat(batch.next_state)
-        state_speed_values = self.policy_net(state_batch)
-
-        next_state_values = self.target_net(next_state_batch).max(1)[0].detach()
-        expected_state_speed_values = (next_state_values * self.gamma) + reward_batch
-
-        loss = F.smooth_l1_loss(state_speed_values, expected_state_speed_values.unsqueeze(1))
-
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-# Define helper functions
-def get_state(rob: IRobobo):
-    ir_values = rob.read_irs()
-    return torch.tensor([ir_values], device=device, dtype=torch.float)
-
-def get_reward(start, p1, p2, movement, rob):
-    reward = 0
-
-    IRs = rob.read_irs()
-    for ir in IRs:
-        if ir > 1000:
-            reward -= 100
-
-    if movement == 'forward':
-        reward += 10
-    elif movement == 'turn':
-        reward += 4
-    else:
-        reward -= 4
-
-    # distance = np.linalg.norm(np.array([p2.x, p2.y, p2.z]) - np.array([p1.x, p1.y, p1.z]))
-    # reward += (distance * 10)
-    return torch.tensor([reward], device=device)
-
-def plot_rewards(rewards, episode):
-    plt.figure()
-    plt.plot(rewards)
-    plt.xlabel('Episode')
-    plt.ylabel('Total Reward')
-    plt.title('Total Reward per Episode')
-    plt.savefig(FIGRURES_DIR / f'training_rewards.png')
-    plt.close()
-
-def run_training_simulation(rob: IRobobo, agent, num_episodes):
-    best_reward = -float('inf')
-    model_path = FIGRURES_DIR / 'best.model'
-    rewards = []
-
-    if os.path.exists(model_path):
-        agent.policy_net.load_state_dict(torch.load(model_path))
-        agent.target_net.load_state_dict(agent.policy_net.state_dict())
-        print("Loaded saved model.")
-
-    for episode in range(num_episodes):
-        print(f'Starting episode {episode}')
-        if isinstance(rob, SimulationRobobo):
-            rob.play_simulation()
-        state = get_state(rob)
-        start_position = rob.get_position()
-        total_reward = 0
-
-        for t in count():
-            p1 = rob.get_position()
-            action = agent.select_action(state)
-            speed = action[0]
-
-            fastness = 40
-
-            # Define movement based on single action value
-            if speed >= 0.5:
-                left_speed = fastness
-                right_speed = fastness
-                movement = 'forward'
-            elif 0 <= speed < 0.5:
-                left_speed = fastness
-                right_speed = -fastness
-                movement = 'turn'
-            elif -0.5 <= speed < 0:
-                left_speed = -fastness
-                right_speed = fastness
-                movement = 'turn'
-            else:
-                left_speed = -fastness
-                right_speed = -fastness
-                movement = 'back'
-
-            rob.move_blocking(left_speed, right_speed, 100)
-            next_state = get_state(rob)
-            p2 = rob.get_position()
-            reward = get_reward(start_position, p1, p2, movement, rob)
-            total_reward += reward.item()
-            agent.memory.push(Transition(state, action, next_state, reward))
-            state = next_state
-            agent.optimize_model()
-
-            if t > 50:
-                if isinstance(rob, SimulationRobobo):
-                    rob.stop_simulation()
-                break
-
-        print(f"Episode: {episode}, Reward: {total_reward}")
-        agent.update_target_network()
-        rewards.append(total_reward)
-        plot_rewards(rewards, episode)
-
-        if total_reward > best_reward:
-            best_reward = total_reward
-            torch.save(agent.policy_net.state_dict(), model_path)
-            print(f"Saved best model with reward: {best_reward}")
-
-def run_trained_model(rob: IRobobo, agent):
-    model_path = FIGRURES_DIR / 'best.model'
-    
-    if os.path.exists(model_path):
-        agent.policy_net.load_state_dict(torch.load(model_path))
-        agent.target_net.load_state_dict(agent.policy_net.state_dict())
-        print("Loaded saved model.")
-    else:
-        print("No saved model found. Please train the model first.")
-        return
-    
-    if isinstance(rob, SimulationRobobo):
-        rob.play_simulation()
-    state = get_state(rob)
-    
-    for t in count():
-        action = agent.select_action(state)
-        speed = action[0]
-
-        if speed >= 0.5:
-            left_speed = 100
-            right_speed = 100
-        elif 0 <= speed < 0.5:
-            left_speed = 100
-            right_speed = -100
-        elif -0.5 <= speed < 0:
-            left_speed = -100
-            right_speed = 100
-        else:
-            left_speed = -100
-            right_speed = -100
-
-        rob.move_blocking(left_speed, right_speed, 100)
-        next_state = get_state(rob)
-        state = next_state
-
-        if t > 100:
-            if isinstance(rob, SimulationRobobo):
-                rob.stop_simulation()
-            break
-
-# Initialize the agent and run the simulation
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-Transition = namedtuple('Transition', ('state', 'speed', 'next_state', 'reward'))
-state_dim = 8
-action_dim = 1
-
-agent = DQNAgent(state_dim, action_dim, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
-
-# Toggle between testing or running a model
-train = False
-def run_all_actions(rob: IRobobo):
-    if train:
-        run_training_simulation(rob, agent, num_episodes=250)
-    else:
-        run_trained_model(rob, agent)
-
-
-
-# Adam seeing as this ^^ is brokey for u from what i remember you probs just want to run some of this code instead
+    def close(self):
+        self.rob.stop_simulation()
 
 # Create an instance of SimulationRobobo
-# robobo_instance = SimulationRobobo() # pick one
-# robobo_instance = HardwareRobobo()
+robobo_instance = SimulationRobobo()
 
-# # Pass the instance to the function
-# run_all_actions(robobo_instance)
+# Create the environment
+env = DummyVecEnv([lambda: RoboboEnv(robobo_instance)])
+
+# Initialize the DQN agent
+model = DQN('MlpPolicy', env, verbose=1)
+
+# Train the agent
+model.learn(total_timesteps=10000)
+
+# Save the model
+model.save("dqn_robobo")
+
+# Load the model
+model = DQN.load("dqn_robobo")
+
+# Test the trained model
+obs = env.reset()
+total_rewards = []  # List to track total rewards for each episode
+for _ in range(1000):
+    action, _states = model.predict(obs, deterministic=True)
+    obs, reward, done, info = env.step(action)
+    print(reward)
+    total_rewards.append(reward)  # Track the reward
+    if done:
+        break
+    env.render()
+
+# Print the total rewards for each episode
+print("Total rewards for each episode:", total_rewards)
