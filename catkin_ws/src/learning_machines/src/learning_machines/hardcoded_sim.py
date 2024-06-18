@@ -219,6 +219,109 @@ def test_hardware(rob: HardwareRobobo):
     print("Robot battery level: ", rob.read_robot_battery())
 
 
+def test_task_2(rob):
+    demo = True
+    ir_data = []
+    image_data = []
+    start_time = time.time()
+
+    def record_data():
+        current_time = time.time() - start_time
+
+        ir_values = rob.read_irs()
+        print(f"IR Values: {ir_values}")  # Debugging: Print IR sensor values
+        if len(ir_values) != 8:
+            print(f"Unexpected number of IR sensor readings: {len(ir_values)}")
+        ir_data.append([current_time] + ir_values)
+        image = rob.get_image_front()
+        cv2.imwrite(str(FIGRURES_DIR / "photo.png"), image)
+        image_values = process_image(str(FIGRURES_DIR / "photo.png"))
+        print(f"image Values: {image_values}")  # Debugging: Print image values
+        if len(ir_values) != 2:
+            print(f"Unexpected number of IR sensor readings: {len(ir_values)}")
+        image_data.append([current_time] + list(image_values))
+
+    # forward
+    x = 0
+    while demo:
+        record_data()
+        x+=1
+        rob.move_blocking(60, 60, 100)
+        record_data()
+        rob.move_blocking(60, 60, 1000)
+        record_data()
+
+        if x>=10 :
+            break
+
+
+    # Convert IR data to DataFrame
+    if ir_data and image_data:  # Ensure ir_data is not empty
+        expected_columns = 9  # 1 for time + 8 IR sensors
+        if len(ir_data[0]) != expected_columns:
+            print(f"Unexpected data structure: {len(ir_data[0])} columns found.")
+
+        columns = ['Time'] + [f'IR_{i}' for i in range(8)]
+        ir_df = pd.DataFrame(ir_data, columns=columns)
+
+        # Plot the IR data (Time (s))
+        plt.figure(figsize=(10, 6))
+        for i in range(1, len(columns)):
+            sns.lineplot(x=ir_df['Time'], y=ir_df[columns[i]], label=columns[i])
+        plt.title('IR Sensor Data Over Time')
+        plt.xlabel('Time (s)')
+        plt.ylabel('IR Sensor Reading')
+        plt.legend()
+        plt.grid(True)
+
+        # Save the plot
+        plt.savefig(FIGRURES_DIR / 'ir_sensor_data_plot.png')
+        plt.close()
+
+        # Plot the IR data (Time Step)
+        plt.figure(figsize=(10, 6))
+        sns.lineplot(data=ir_df.drop(columns=['Time']))
+        plt.title('IR Sensor Data Over Time')
+        plt.xlabel('Time Step')
+        plt.ylabel('IR Sensor Reading')
+        plt.grid(True)
+
+        # Save the plot
+        plt.savefig(FIGRURES_DIR / 'ir_sensor_data_plot_time_step.png')
+        plt.close()
+
+        columns = ['Time'] + [f'image_{i}' for i in range(2)]
+        image_df = pd.DataFrame(image_data, columns=columns)
+
+        # Plot the image data (Time (s))
+        plt.figure(figsize=(10, 6))
+        for i in range(1, len(columns)):
+            sns.lineplot(x=image_df['Time'], y=image_df[columns[i]], label=columns[i])
+        plt.title('Image Data Over Time')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Image reading')
+        plt.legend()
+        plt.grid(True)
+        # Save the plot
+        plt.savefig(FIGRURES_DIR / 'image_sensor_data_plot.png')
+        plt.close()
+
+        # Plot the image data (Time Step)
+        plt.figure(figsize=(10, 6))
+        sns.lineplot(data=image_df.drop(columns=['Time']))
+        plt.title('Image Data Over Time')
+        plt.xlabel('Time Step')
+        plt.ylabel('Image reading')
+        plt.grid(True)
+        # Save the plot
+        plt.savefig(FIGRURES_DIR / 'image_sensor_data_plot_time_step.png')
+        plt.close()
+        print(image_df)
+
+    else:
+        print("No data recorded.")
+
+
 def run_all_actions(rob: IRobobo):
     if isinstance(rob, SimulationRobobo):
         rob.play_simulation()
