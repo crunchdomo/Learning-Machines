@@ -2,7 +2,7 @@
 
 import gym
 import torch
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, TD3
 from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
 from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnMaxEpisodes, EvalCallback
 from stable_baselines3.common.preprocessing import is_image_space
@@ -97,7 +97,7 @@ class RoboboEnv(gym.Env):
         reward = self.get_reward(action, old_state, next_state)
         self.total_reward += reward
         done = self.is_done(next_state[:4], reward) or self.current_step >= self.max_steps
-        if self.is_done(next_state[:4], reward) or self.current_step >= self.max_steps:
+        if self.is_done(next_state[:4], reward):# or self.current_step >= self.max_steps:
             done = True
             self.rob.stop_simulation()
         self.recent_actions.append(tuple(action))
@@ -152,21 +152,17 @@ class RoboboEnv(gym.Env):
     
         # Checks if x values are BIG. goal is to not punish for touching food but still account for hitting walls
         if np.sum(IR > 0.8) >= 1:
-            reward -= 5
+            reward -= 50
 
-        reward += (action[0] + action[1]) * 5
+        # reward += (action[0] + action[1]) * 5
 
-        if action[0] < 0 and action[1] < 0:
-            reward -= 10
+        # if action[0] < 0 and action[1] < 0:
+        #     reward -= 10
 
         return reward
 
     def is_done(self, state, reward):
-        # if np.any(state >= 1.0):
-        #     self.rob.stop_simulation()
-        #     return True
-        if np.isnan(reward):
-            self.rob.stop_simulation()
+        if np.any(state >= 1.0) or np.isnan(reward):
             return True
         return False
 
@@ -187,6 +183,7 @@ policy_kwargs = dict(
 )
 
 model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
+# model = TD3('MlpPolicy', env, verbose=1, learning_rate=1e-4, batch_size=512)
 
 max_episodes = 1000
 
