@@ -4,11 +4,48 @@ import gym
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
-from stable_baselines3.common.callbacks import StopTrainingOnMaxEpisodes
+from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnMaxEpisodes, EvalCallback
+from stable_baselines3.common.preprocessing import is_image_space
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from robobo_interface import SimulationRobobo, IRobobo
 import numpy as np
 from collections import deque
 from data_files import FIGRURES_DIR
+
+class PrintEpisodeCallback(BaseCallback):
+    def __init__(self, verbose=0):
+        super(PrintEpisodeCallback, self).__init__(verbose)
+        self.episode_num = 0
+
+    def _on_step(self) -> bool:
+        if self.locals['dones'][0]:
+            self.episode_num += 1
+            print(f"Episode: {self.episode_num}")
+        return True
+
+class SWACallback(BaseCallback):
+    def __init__(self, swa_start, swa_freq, verbose=0):
+        super(SWACallback, self).__init__(verbose)
+        self.swa_start = swa_start
+        self.swa_freq = swa_freq
+        self.swa_weights = None
+        self.swa_n = 0
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps >= self.swa_start and self.num_timesteps % self.swa_freq == 0:
+            if self.swa_weights is None:
+                self.swa_weights = {k: v.clone() for k, v in self.model.policy.state_dict().items()}
+            else:
+                for k, v in self.model.policy.state_dict().items():
+                    self.swa_weights[k] += v
+            self.swa_n += 1
+        return True
+
+    def _on_training_end(self) -> None:
+        if self.swa_weights is not None:
+            for k, v in self.swa_weights.items():
+                self.swa_weights[k] = v / self.swa_n
+            self.model.policy.load_state_dict(self.swa_weights)
 
 class RoboboEnv(gym.Env):
     def __init__(self, rob: IRobobo):
@@ -37,9 +74,6 @@ class RoboboEnv(gym.Env):
         done = self.is_done(next_state, reward)
         self.recent_actions.append(tuple(action))
 
-        print(f"Action: {action}, Left Speed: {left_speed}, Right Speed: {right_speed}")
-        print(f"State: {state}, Next State: {next_state}, Reward: {reward}, Done: {done}")
-
         return next_state, reward, done, {}
 
     def get_state(self):
@@ -47,23 +81,25 @@ class RoboboEnv(gym.Env):
         ir_values = self.rob.read_irs()
         ir_values = np.clip(ir_values, 0, 10000)
         ir_values = ir_values / 10000.0
-        if np.any(np.isinf(ir_values)) or np.any(np.isnan(ir_values)):
-            print("Invalid IR sensor values detected:", ir_values)
         return np.array(ir_values, dtype=np.float32)
 
     def get_reward(self, action, state):
         # modify as required for openCV values in state
 
         if np.any(state > 0.7):
-            return -10
+            return -20
 
-        reward = 20 * (action[0] + action[1])
-
+        reward = 10 * (action[0] + action[1])
         if self.recent_actions.count(tuple(action)) > 5:
             reward -= 10
 
         if len(self.recent_actions) > 1 and tuple(action) != self.recent_actions[-1]:
             reward += 1
+
+        if len(self.recent_actions) > 0:
+            previous_action = np.array(self.recent_actions[-1])
+            action_change = np.linalg.norm(action - previous_action)
+            reward -= action_change * 5
 
         return reward
 
@@ -83,19 +119,28 @@ class RoboboEnv(gym.Env):
         self.rob.stop_simulation()
 
 robobo_instance = SimulationRobobo()
-
 env = DummyVecEnv([lambda: RoboboEnv(robobo_instance)])
 env = VecCheckNan(env, raise_exception=True)
 
-model = PPO('MlpPolicy', env, verbose=1)
+policy_kwargs = dict(
+    net_arch=dict(pi=[64, 64], vf=[128, 128]), 
+    activation_fn=torch.nn.ReLU,
+    normalize_images=True
+)
 
-max_episodes = 10
+model = PPO('MlpPolicy', env, verbose=1, learning_rate=3e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
 
-callback = StopTrainingOnMaxEpisodes(max_episodes=max_episodes, verbose=1)
+max_episodes = 1000
 
-model.learn(total_timesteps=1, callback=callback)  
+print_episode_callback = PrintEpisodeCallback(verbose=1)
+stop_training_callback = StopTrainingOnMaxEpisodes(max_episodes=max_episodes, verbose=1)
+swa_callback = SWACallback(swa_start=5000, swa_freq=1000, verbose=1)
 
-save_location = FIGRURES_DIR / "ppo_robobo.zip"
+callback = [print_episode_callback, stop_training_callback, swa_callback]
+
+model.learn(total_timesteps=10000, callback=callback)
+
+save_location = FIGRURES_DIR / "ppo_robobo_100k.zip"
 print(f'saving robo to: {save_location}')
 model.save(save_location)
 
