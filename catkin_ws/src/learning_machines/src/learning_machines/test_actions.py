@@ -11,6 +11,8 @@ from robobo_interface import SimulationRobobo, IRobobo
 import numpy as np
 from collections import deque
 from data_files import FIGRURES_DIR
+from .process_image import process_image as pic_calcs
+import cv2
 
 class PrintEpisodeCallback(BaseCallback):
     def __init__(self, verbose=0):
@@ -52,44 +54,74 @@ class RoboboEnv(gym.Env):
         super(RoboboEnv, self).__init__()
         self.rob = rob
         self.action_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
-        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(8,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
         self.recent_actions = deque(maxlen=30)
         self.total_reward = 0
 
     def reset(self):
         self.rob.play_simulation()
+        self.rob.set_phone_tilt_blocking(100, 100)
         self.recent_actions.clear()
         self.total_reward = 0
         return self.get_state()
 
     def step(self, action):
-        state = self.get_state() # get the CV data for 1st state
+        old_state = self.get_state() # get the CV data for 1st state
         left_speed = action[0] * 100
         right_speed = action[1] * 100
 
         self.rob.move_blocking(left_speed, right_speed, 100)
         next_state = self.get_state() # get the CV data for 2nd state
-        reward = self.get_reward(action, next_state) # use both states in reward to encourage moving closer
+        reward = self.get_reward(action, old_state, next_state)
         self.total_reward += reward
-        done = self.is_done(next_state, reward)
+        done = self.is_done(next_state[:8], reward) # only check the IR values
         self.recent_actions.append(tuple(action))
 
         return next_state, reward, done, {}
 
     def get_state(self):
-        # Get and return CV values
+        # IR values
         ir_values = self.rob.read_irs()
         ir_values = np.clip(ir_values, 0, 10000)
         ir_values = ir_values / 10000.0
-        return np.array(ir_values, dtype=np.float32)
 
-    def get_reward(self, action, state):
+        # GCV values
+        image = self.rob.get_image_front()
+        if isinstance(self.rob, SimulationRobobo):
+            image = cv2.flip(image, 0)
+        cv2.imwrite(str(FIGRURES_DIR / "photo.png"), image)
+        image_values = pic_calcs(str(FIGRURES_DIR / "photo.png"))
+
+        state_values = np.concatenate((ir_values, image_values))
+        return np.array(state_values, dtype=np.float32)
+
+    def get_reward(self, action, old_state, new_state):
+        reward = 0
         # modify as required for openCV values in state
+        IR = new_state[:8]
+        old_CV = old_state[8:]
+        new_CV = new_state[8:]
 
-        if np.any(state > 0.7):
-            return -20
+        # calc for bottom dist
+        if old_CV[0] < new_CV[0]:
+            reward += 15
 
-        reward = 10 * (action[0] + action[1])
+        # calc for side to side dist
+        old_distance = abs(old_CV[1] - 0.5)
+        new_distance = abs(new_CV[1] - 0.5)
+        
+        if new_distance < old_distance:
+            reward += 10.0  # Reward when new_CV is closer to 0.5
+        else:
+            reward += 0.0  # No reward otherwise
+    
+        # Checks if three values are BIG. goal is to not punish for touching food but still account for hitting walls
+        if np.sum(IR > 0.7) >= 3:
+            reward -= 20
+
+
+        # Adams reward stuff for doing new actions
+        reward += 10 * (action[0] + action[1])
         if self.recent_actions.count(tuple(action)) > 5:
             reward -= 10
 
@@ -104,7 +136,7 @@ class RoboboEnv(gym.Env):
         return reward
 
     def is_done(self, state, reward):
-        if np.any(state >= 1.0): # modify this to only evaluate states related to IR not CV e.g. the first 8
+        if np.any(state >= 1.0):
             self.rob.stop_simulation()
             return True
         if np.isnan(reward):

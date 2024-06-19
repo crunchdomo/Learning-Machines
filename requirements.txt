@@ -6,9 +6,7 @@ opencv-python~=4.8
 seaborn
 matplotlib
 pandas
-torch
-torchrl
 vmas
 tqdm
-gymnasium 
-
+stable-baselines3
+shimmy>=0.2.1
