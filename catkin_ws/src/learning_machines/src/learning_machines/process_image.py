@@ -7,17 +7,14 @@ def process_image(image_path):
     ----------
     image_path : str
         The path to the image file.
-
     Returns
     -------
     tuple
         A tuple containing two float values:
         - normalized_distance_bottom: Closeness to bottom of the image. Returns 1 at bottom, 0 at top.
         - normalized_distance_side: Closeness to right of the image. Returns 1 at the right, 0 at the left.
-
-    - Returns 0 in both cases if no box is found.
+        - Returns 0 in both cases if no box is found.
     """
-        
     # Load the image
     image = cv2.imread(image_path)
 
@@ -32,9 +29,15 @@ def process_image(image_path):
     hsv = cv2.cvtColor(resized_image, cv2.COLOR_BGR2HSV)
 
     # Define range for green color and create a mask
-    lower_green = np.array([35, 40, 40])
+    lower_green = np.array([40, 100, 100])
+    # lower_green = np.array([35, 40, 40])
     upper_green = np.array([85, 255, 255])
     mask = cv2.inRange(hsv, lower_green, upper_green)
+
+    # Display the mask for debugging
+    # cv2.imshow('Mask', mask)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
 
     # Find contours in the mask
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -77,8 +80,9 @@ def process_image(image_path):
         return 0, 0
 
 # Example usage:
-# image_path = "test_pic.jpg"
+# image_path = "test_photo.png"
 # normalized_distance_bottom, normalized_distance_vertical = process_image(image_path)
+
 # if normalized_distance_bottom is not None and normalized_distance_vertical is not None:
 #     print(f"Normalized distance from the bottom: {normalized_distance_bottom:.2f}")
 #     print(f"Normalized distance from the vertical center: {normalized_distance_vertical:.2f}")
