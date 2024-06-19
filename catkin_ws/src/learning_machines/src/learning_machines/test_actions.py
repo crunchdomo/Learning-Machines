@@ -64,7 +64,7 @@ class SaveBestModelCallback(BaseCallback):
                 self.best_mean_reward = mean_reward
                 save_location = FIGRURES_DIR / f"ppo_robobo_best.zip"
                 self.model.save(save_location)
-                print(f"New best model saved with mean reward: {mean_reward} at timestep: {self.num_timesteps}")
+                print(f"New best model saved with mean reward: {mean_reward}")
         return True
 
 class RoboboEnv(gym.Env):
@@ -72,18 +72,22 @@ class RoboboEnv(gym.Env):
         super(RoboboEnv, self).__init__()
         self.rob = rob
         self.action_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
-        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(6,), dtype=np.float32)
         self.recent_actions = deque(maxlen=30)
         self.total_reward = 0
+        self.current_step = 0
+        self.max_steps = 100
 
     def reset(self):
         self.rob.play_simulation()
         self.rob.set_phone_tilt_blocking(100, 100)
         self.recent_actions.clear()
         self.total_reward = 0
+        self.current_step = 0
         return self.get_state()
 
     def step(self, action):
+        self.current_step += 1
         old_state = self.get_state() # get the CV data for 1st state
         left_speed = action[0] * 100
         right_speed = action[1] * 100
@@ -92,7 +96,10 @@ class RoboboEnv(gym.Env):
         next_state = self.get_state() # get the CV data for 2nd state
         reward = self.get_reward(action, old_state, next_state)
         self.total_reward += reward
-        done = self.is_done(next_state[:8], reward) # only check the IR values
+        done = self.is_done(next_state[:4], reward) or self.current_step >= self.max_steps
+        if self.is_done(next_state[:4], reward) or self.current_step >= self.max_steps:
+            done = True
+            self.rob.stop_simulation()
         self.recent_actions.append(tuple(action))
 
         return next_state, reward, done, {}
@@ -110,15 +117,15 @@ class RoboboEnv(gym.Env):
         cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
         image_values = pic_calcs(str(FIGRURES_DIR / "pic.png"))
 
-        state_values = np.concatenate((ir_values, image_values))
+        state_values = np.concatenate((ir_values[[7,4,5,6]], image_values))
         return np.array(state_values, dtype=np.float32)
 
     def get_reward(self, action, old_state, new_state):
         reward = 0
         # modify as required for openCV values in state
-        IR = new_state[:8]
-        old_CV = old_state[8:]
-        new_CV = new_state[8:]
+        IR = new_state[:4]
+        old_CV = old_state[4:]
+        new_CV = new_state[4:]
 
         '''
         If rob moves closer to block, reward
@@ -127,11 +134,11 @@ class RoboboEnv(gym.Env):
         '''
         # calc for bottom dist
         if old_CV[0] < new_CV[0]:
-            reward += (new_CV[0] - old_CV[0]) * 10
+            reward += new_CV[0] * 10
         elif new_CV[0] == 1 and old_CV[0] == 1:
-            reward += 1
+            reward += 10
         elif old_CV[0] > new_CV[0]:
-            reward += (new_CV[0] - old_CV[0]) * 10
+            reward += (new_CV[0] - old_CV[0]) * 50
 
         # calc for side to side dist
         old_distance = abs(old_CV[1] - 0.5)
@@ -141,24 +148,23 @@ class RoboboEnv(gym.Env):
         Reward if block gets closer to middle
         Punish if it gets further from middle
         '''
-        
-        if new_distance < old_distance:
-            reward += (old_distance - new_distance) * 5  # Reward for getting closer to 0.5
-        else:
-            reward -= (new_distance - old_distance) * 5
+        reward += (old_distance - new_distance) * 10  
     
-        # Checks if three values are BIG. goal is to not punish for touching food but still account for hitting walls
-        if np.sum(IR > 0.7) >= 3:
+        # Checks if x values are BIG. goal is to not punish for touching food but still account for hitting walls
+        if np.sum(IR > 0.8) >= 1:
             reward -= 5
 
-        reward += 10 * (action[0] + action[1])
+        reward += (action[0] + action[1]) * 5
+
+        if action[0] < 0 and action[1] < 0:
+            reward -= 10
 
         return reward
 
     def is_done(self, state, reward):
-        if np.any(state >= 1.0):
-            self.rob.stop_simulation()
-            return True
+        # if np.any(state >= 1.0):
+        #     self.rob.stop_simulation()
+        #     return True
         if np.isnan(reward):
             self.rob.stop_simulation()
             return True
@@ -180,7 +186,7 @@ policy_kwargs = dict(
     normalize_images=True
 )
 
-model = PPO('MlpPolicy', env, verbose=1, learning_rate=3e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
+model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
 
 max_episodes = 1000
 
