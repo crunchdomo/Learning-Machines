@@ -49,6 +49,24 @@ class SWACallback(BaseCallback):
                 self.swa_weights[k] = v / self.swa_n
             self.model.policy.load_state_dict(self.swa_weights)
 
+class SaveBestModelCallback(BaseCallback):
+    def __init__(self, verbose=0):
+        super(SaveBestModelCallback, self).__init__(verbose)
+        self.best_mean_reward = -np.inf
+        self.episode_rewards = []
+
+    def _on_step(self) -> bool:
+        if self.locals['dones'][0]:
+            episode_reward = sum(self.locals['rewards'])
+            self.episode_rewards.append(episode_reward)
+            mean_reward = np.mean(self.episode_rewards[-100:])  # Mean reward over the last 100 episodes
+            if mean_reward > self.best_mean_reward:
+                self.best_mean_reward = mean_reward
+                save_location = FIGRURES_DIR / f"ppo_robobo_best.zip"
+                self.model.save(save_location)
+                print(f"New best model saved with mean reward: {mean_reward} at timestep: {self.num_timesteps}")
+        return True
+
 class RoboboEnv(gym.Env):
     def __init__(self, rob: IRobobo):
         super(RoboboEnv, self).__init__()
@@ -89,8 +107,8 @@ class RoboboEnv(gym.Env):
         image = self.rob.get_image_front()
         if isinstance(self.rob, SimulationRobobo):
             image = cv2.flip(image, 0)
-        cv2.imwrite(str(FIGRURES_DIR / "photo.png"), image)
-        image_values = pic_calcs(str(FIGRURES_DIR / "photo.png"))
+        cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
+        image_values = pic_calcs(str(FIGRURES_DIR / "pic.png"))
 
         state_values = np.concatenate((ir_values, image_values))
         return np.array(state_values, dtype=np.float32)
@@ -167,8 +185,9 @@ max_episodes = 1000
 print_episode_callback = PrintEpisodeCallback(verbose=1)
 stop_training_callback = StopTrainingOnMaxEpisodes(max_episodes=max_episodes, verbose=1)
 swa_callback = SWACallback(swa_start=5000, swa_freq=1000, verbose=1)
+save_best_model_callback = SaveBestModelCallback(verbose=1)
 
-callback = [print_episode_callback, stop_training_callback, swa_callback]
+callback = [print_episode_callback, stop_training_callback, swa_callback, save_best_model_callback]
 
 model.learn(total_timesteps=10000, callback=callback)
 
@@ -177,3 +196,6 @@ print(f'saving robo to: {save_location}')
 model.save(save_location)
 
 obs = env.reset()
+
+def run_all_actions():
+    print("Finished!!")
