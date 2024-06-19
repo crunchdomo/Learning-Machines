@@ -120,36 +120,38 @@ class RoboboEnv(gym.Env):
         old_CV = old_state[8:]
         new_CV = new_state[8:]
 
+        '''
+        If rob moves closer to block, reward
+        If block reaches bottom of cam and stays there, fine.
+        If block moves away, punish
+        '''
         # calc for bottom dist
         if old_CV[0] < new_CV[0]:
-            reward += 15
+            reward += (new_CV[0] - old_CV[0]) * 10
+        elif new_CV[0] == 1 and old_CV[0] == 1:
+            reward += 1
+        elif old_CV[0] > new_CV[0]:
+            reward += (new_CV[0] - old_CV[0]) * 10
 
         # calc for side to side dist
         old_distance = abs(old_CV[1] - 0.5)
         new_distance = abs(new_CV[1] - 0.5)
+
+        '''
+        Reward if block gets closer to middle
+        Punish if it gets further from middle
+        '''
         
         if new_distance < old_distance:
-            reward += 10.0  # Reward when new_CV is closer to 0.5
+            reward += (old_distance - new_distance) * 5  # Reward for getting closer to 0.5
         else:
-            reward += 0.0  # No reward otherwise
+            reward -= (new_distance - old_distance) * 5
     
         # Checks if three values are BIG. goal is to not punish for touching food but still account for hitting walls
         if np.sum(IR > 0.7) >= 3:
-            reward -= 20
+            reward -= 5
 
-
-        # Adams reward stuff for doing new actions
         reward += 10 * (action[0] + action[1])
-        if self.recent_actions.count(tuple(action)) > 5:
-            reward -= 10
-
-        if len(self.recent_actions) > 1 and tuple(action) != self.recent_actions[-1]:
-            reward += 1
-
-        if len(self.recent_actions) > 0:
-            previous_action = np.array(self.recent_actions[-1])
-            action_change = np.linalg.norm(action - previous_action)
-            reward -= action_change * 5
 
         return reward
 
@@ -197,5 +199,5 @@ model.save(save_location)
 
 obs = env.reset()
 
-def run_all_actions():
+def run_all_actions(rob):
     print("Finished!!")
