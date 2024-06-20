@@ -20,19 +20,30 @@ from robobo_interface import (
     HardwareRobobo,
 )
 
+
+
+import gym
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
+from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnMaxEpisodes
+import pandas as pd
+from .process_image import process_image as pic_calcs
+import cv2
+import json
+
+
 # Define the Decision Tree model
 
-actions = ['forward', 'turn_right', 'turn_left', 'back']
+num_variables = 6
 
 class Node:
-    def __init__(self, feature: int = None, split_val: float = None, action: int = None):
+    def __init__(self, feature: int = None, split_val: float = None, action: list = None):
         # split node
         self.feature = feature
         self.split_val = split_val
         
         # leaf node
         self.action = action
-
 
 
 class DecisionTree:
@@ -52,7 +63,7 @@ class DecisionTree:
         self.depth = 0
         
         # root node will be a split node
-        root_feature = random.choice(range(8)) # randomly choose a sensor
+        root_feature = random.choice(range(num_variables)) # randomly choose a sensor
         self.nodes[1] = Node(
             feature=root_feature,
             split_val=random.uniform(0, 75)
@@ -60,9 +71,9 @@ class DecisionTree:
     
     def add_node(self, par_ind: int, node_type: str):
         if node_type == "leaf":
-            new_node = Node(action=random.choice(actions))
+            new_node = Node(action=[random.uniform(-100, 100),random.uniform(-100, 100)])
         elif node_type == "split":
-            feature = random.choice(range(8)) # randomly choose a sensor
+            feature = random.choice(range(num_variables)) # randomly choose a sensor
             new_node = Node(
                 feature=feature,
                 split_val=random.uniform(0, 75)
@@ -93,8 +104,45 @@ class DecisionTree:
             if state[node.feature] > node.split_val:
                 cur += 1
 
+    def to_dict(self):
+        return {
+            "max_depth": self.max_depth,
+            "nodes": [
+                {
+                    "feature": node.feature,
+                    "split_val": node.split_val,
+                    "action": node.action
+                } if node else None
+                for node in self.nodes
+            ],
+            "depth_l": self.depth_l,
+            "depth": self.depth
+        }
 
+    @staticmethod
+    def from_dict(tree_dict):
+        tree = DecisionTree(tree_dict["max_depth"])
+        tree.nodes = [
+            Node(
+                feature=node["feature"],
+                split_val=node["split_val"],
+                action=node["action"]
+            ) if node else None
+            for node in tree_dict["nodes"]
+        ]
+        tree.depth_l = tree_dict["depth_l"]
+        tree.depth = tree_dict["depth"]
+        return tree
 
+    def save_to_file(self, filename):
+        with open(filename, 'w') as f:
+            json.dump(self.to_dict(), f)
+
+    @staticmethod
+    def load_from_file(filename):
+        with open(filename, 'r') as f:
+            tree_dict = json.load(f)
+            return DecisionTree.from_dict(tree_dict)
 
 # Randomly Generated Trees
 # A breadth-first-search approach will be used to randomly generate the initial population. The split_p parameter is the probability that each randomly generated node will be a split node.
@@ -118,60 +166,80 @@ def generate_random(max_depth: int, split_p: float):
                 
     return ret
 
-
-
 # Define helper functions
 def get_state(rob: IRobobo):
+    # IR values
     ir_values = rob.read_irs()
-    return ir_values
+    ir_values = np.clip(ir_values, 0, 10000)
+    ir_values = ir_values / 10000.0
 
-def get_reward(start, p1, p2, movement, rob):
-    reward = 0
+    # GCV values
+    image = rob.get_image_front()
+    if isinstance(rob, SimulationRobobo):
+        image = cv2.flip(image, 0)
+    cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
+    image_values = pic_calcs(str(FIGRURES_DIR / "pic.png"))*100
 
-    IRs = rob.read_irs()
-    for ir in IRs:
-        if ir > 1000:
-            reward += 100
-    if movement == 'forward' or movement == 'back':
-        reward += 2
+    state_values = np.concatenate((ir_values[[7,4,5,6]], image_values))
+    return np.array(state_values, dtype=np.float32)
 
-    return reward
+def get_reward(action, old_state, new_state):
+        reward = 0
+        # modify as required for openCV values in state
+        IR = new_state[:4]
+        old_CV = old_state[4:]
+        new_CV = new_state[4:]
 
+        '''
+        If rob moves closer to block, reward
+        If block reaches bottom of cam and stays there, fine.
+        If block moves away, punish
+        '''
+        # calc for bottom dist
+        if old_CV[0] < new_CV[0]:
+            reward += new_CV[0] * 10
+        elif new_CV[0] == 1 and old_CV[0] == 1:
+            reward += 10
+        elif old_CV[0] > new_CV[0]:
+            reward += (new_CV[0] - old_CV[0]) * 50
 
+        # calc for side to side dist
+        old_distance = abs(old_CV[1] - 0.5)
+        new_distance = abs(new_CV[1] - 0.5)
 
+        '''
+        Reward if block gets closer to middle
+        Punish if it gets further from middle
+        '''
+        reward += (old_distance - new_distance) * 10  
+
+        # reward += (action[0] + action[1]) * 5
+    
+        # Checks if x values are BIG. 
+        # goal is to not punish for touching food but still account for hitting walls
+        if np.sum(IR > 0.8) >= 1:
+            reward -= 50
+
+        return reward
 
 def fitness(individual: DecisionTree, rob: IRobobo):
     if isinstance(rob, SimulationRobobo):
         rob.play_simulation()
 
     state = get_state(rob)
-    start_position = rob.get_position()
     total_reward = 0
 
     for t in count():
-        p1 = rob.get_position()
-        action = individual.select_action(state)  ##
-        fastness = 50
+        action = individual.select_action(state)  
 
-        # Define movement based on single action value
-        if action == 'forward':
-            left_speed = fastness
-            right_speed = fastness
-        elif action == 'turn_right':
-            left_speed = fastness
-            right_speed = -fastness
-        elif action == 'turn_left':
-            left_speed = -fastness
-            right_speed = fastness
-        elif action == 'back':
-            left_speed = -fastness
-            right_speed = -fastness
+        left_speed = action[0]
+        right_speed = action[1]
+
+        old_state = get_state(rob)
         rob.move_blocking(left_speed, right_speed, 100)
         next_state = get_state(rob)
-        p2 = rob.get_position()
-
             
-        reward = get_reward(start_position, p1, p2, action, rob)
+        reward = get_reward(action, old_state, next_state)
         total_reward += reward
         state = next_state
 
@@ -180,8 +248,6 @@ def fitness(individual: DecisionTree, rob: IRobobo):
                 rob.stop_simulation()
             break
     return total_reward
-
-
 
 def selection(population: List[DecisionTree], fitness: List[float], k: int):
     inds = random.sample(range(len(population)), k)
@@ -193,8 +259,6 @@ def selection(population: List[DecisionTree], fitness: List[float], k: int):
     p2 = population[ind]
     
     return p1, p2
-
-
 
 def crossover(p1: DecisionTree, p2: DecisionTree):
     def replace(source: DecisionTree, replace: DecisionTree, ind: int):
@@ -229,7 +293,6 @@ def crossover(p1: DecisionTree, p2: DecisionTree):
     
     return c1, c2
 
-
 def mutate(tree: DecisionTree):
     # select a random node
     valid = [i for i in range(len(tree.nodes)) if tree.nodes[i] is not None]
@@ -237,21 +300,40 @@ def mutate(tree: DecisionTree):
     
     if tree.nodes[ind].action is None:
         # if selected node is a split node
-        feature = random.choice(range(8))
+        feature = random.choice(range(num_variables))
         tree.nodes[ind] = Node(
             feature = feature, 
             split_val = random.uniform(0, 75)
         )
     else:
         # if selected node is a leaf node
-        tree.nodes[ind] = Node(action=random.choice(actions))
+        old_action = tree.nodes[ind].action
+        tree.nodes[ind] = Node(action = [value+random.uniform(-20, 20) for value in old_action])
 
+def plot_rewards(average_fitnesses, max_fitnesses):
+    plt.figure()
+    plt.plot(average_fitnesses)
+    plt.xlabel('Generation')
+    plt.ylabel('Average fitness')
+    plt.title('Average fitness per Generation')
+    plt.savefig(FIGRURES_DIR / f'average_fitnesses_EDT.png')
+    plt.close()
+
+    plt.figure()
+    plt.plot(max_fitnesses)
+    plt.xlabel('Generation')
+    plt.ylabel('Max fitness')
+    plt.title('Max fitness per Generation')
+    plt.savefig(FIGRURES_DIR / f'max_fitnesses_EDT.png')
+    plt.close()
 
 def run_training_simulation(max_depth: int, split_p: float, population_size: int, cross_p: float, mut_p: float, generation_cnt: int, rob):
     # initial population
     n = population_size
     population = [generate_random(max_depth, split_p) for _ in range(n)]
-    
+    average_fitnesses = []
+    max_fitnesses = []
+
     # main loop
     for gen in range(generation_cnt):
         # select the best individuals from population
@@ -278,33 +360,29 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
         population = new_pop
         
         # print stats
+        average_fitness_value = sum(fitnesses) / n
+        average_fitnesses.append(average_fitness_value)
+
+        max_fitness_value = max(fitnesses)
+        max_fitnesses.append(max_fitness_value)
+
+
         print(f"Generation:       {gen + 1}/{generation_cnt}")
-        print(f"Average fitness: {sum(fitnesses) / n}")
-    
-    return population
+        print(f"Average fitness: {average_fitness_value}")
+        print(f"Max fitness: {max_fitness_value}")
+
+    plot_rewards(average_fitnesses, max_fitnesses)
+    final_fitnesses = [fitness(tree,rob) for tree in population]
+
+    return population, final_fitnesses
 
 
 
-
-
-
-def plot_rewards(rewards, episode):
-    plt.figure()
-    plt.plot(rewards)
-    plt.xlabel('Episode')
-    plt.ylabel('Total Reward')
-    plt.title('Total Reward per Episode')
-    plt.savefig(FIGRURES_DIR / f'training_rewards_EDT.png')
-    plt.close()
-
-
-
-
-def run_trained_model(rob: IRobobo, agent):
-    model_path = FIGRURES_DIR / 'best.model.EDT'
-    
+def run_trained_model(rob: IRobobo, model_path = 'best.model.EDT.top1'):
+    tree = DecisionTree.load_from_file(model_path)
     if os.path.exists(model_path):
-        pass
+        fitness = fitness(tree,rob)
+        
     else:
         print("No saved model found. Please train the model first.")
         return
@@ -316,13 +394,19 @@ def run_trained_model(rob: IRobobo, agent):
 rob = SimulationRobobo()
 
 
-
 # Toggle between testing or running a model
 train = True
 def run_all_actions(rob: IRobobo):
     if train:
-        population = run_training_simulation(7, 0.5, 100, 0.7, 0.3, 50, rob)
+        population, final_fitnesses = run_training_simulation(7, 0.5, 10, 0.7, 0.3, 1, rob)
+        # max_depth: int, split_p: float, population_size: int, cross_p: float, mut_p: float, generation_cnt: int
+        sorted_population = [tree for _, tree in sorted(zip(final_fitnesses, population), reverse=True)]
+        top_5_individuals = sorted_population[:5]
+        for i in range(5):
+            top_5_individuals[i].save_to_file('best.model.EDT.top'+str(i+1))
+
+
     else:
-        pass
+        run_trained_model(rob, model_path = 'best.model.EDT.top1')
 
 
