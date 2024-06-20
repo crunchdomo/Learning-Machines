@@ -7,10 +7,12 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
 from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnMaxEpisodes
 from robobo_interface import SimulationRobobo, IRobobo
 import numpy as np
+import pandas as pd
 from collections import deque
 from data_files import FIGRURES_DIR
 from .process_image import process_image as pic_calcs
 import cv2
+import matplotlib.pyplot as plt
 
 class PrintEpisodeCallback(BaseCallback):
     def __init__(self, verbose=0):
@@ -73,15 +75,21 @@ class RoboboEnv(gym.Env):
         self.observation_space = gym.spaces.Box(low=0, high=1, shape=(6,), dtype=np.float32)
         self.recent_actions = deque(maxlen=30)
         self.total_reward = 0
+        self.window = 10
+        self.rewards = []
+        self.current_step = 0
+        self.max_steps = 100
 
     def reset(self):
         self.rob.play_simulation()
         self.rob.set_phone_tilt_blocking(100, 100)
         self.recent_actions.clear()
         self.total_reward = 0
+        self.current_step = 0
         return self.get_state()
 
     def step(self, action):
+        self.current_step += 1
         old_state = self.get_state() # get the CV data for 1st state
 
         left_speed = action[0] * 100
@@ -93,10 +101,26 @@ class RoboboEnv(gym.Env):
         self.total_reward += reward
 
         done = False
+        # done = self.is_done(next_state[:4], reward) or self.current_step >= self.max_steps
         if self.is_done(next_state[:4], reward):
             done = True
             self.rob.stop_simulation()
         self.recent_actions.append(tuple(action))
+
+        # Reward plotting stuff
+        self.rewards.append(reward)
+        rewards_series = pd.Series(self.rewards)
+        rolling_avg = rewards_series.rolling(window=self.window).mean()
+        if self.current_step % 4 == 0:
+            plt.figure(figsize=(12, 6))
+            plt.plot(self.rewards, label='Reward at each step')
+            plt.plot(rolling_avg, label=f'Rolling Average (window size {self.window})', color='red')
+            plt.xlabel('Steps')
+            plt.ylabel('Reward')
+            plt.legend()
+            plt.title('Reward over Time')
+            plt.savefig(FIGRURES_DIR / f'training_rewards.png')
+            plt.close()
 
         return next_state, reward, done, {}
 
@@ -145,6 +169,8 @@ class RoboboEnv(gym.Env):
         Punish if it gets further from middle
         '''
         reward += (old_distance - new_distance) * 10  
+
+        # reward += (action[0] + action[1]) * 5
     
         # Checks if x values are BIG. 
         # goal is to not punish for touching food but still account for hitting walls
@@ -164,9 +190,13 @@ class RoboboEnv(gym.Env):
     def close(self):
         self.rob.stop_simulation()
 
+
 robobo_instance = SimulationRobobo()
 env = DummyVecEnv([lambda: RoboboEnv(robobo_instance)])
 env = VecCheckNan(env, raise_exception=True)
+
+save_location = FIGRURES_DIR / "ppo_robobo_100k.zip"
+train = True
 
 policy_kwargs = dict(
     net_arch=dict(pi=[64, 64], vf=[128, 128]), 
@@ -174,25 +204,34 @@ policy_kwargs = dict(
     normalize_images=True
 )
 
-model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
-# model = TD3('MlpPolicy', env, verbose=1, learning_rate=1e-4, batch_size=512)
+if train:
+    model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
+    # model = TD3('MlpPolicy', env, verbose=1, learning_rate=1e-4, batch_size=512)
 
-max_episodes = 1000
+    max_episodes = 1000
 
-print_episode_callback = PrintEpisodeCallback(verbose=1)
-stop_training_callback = StopTrainingOnMaxEpisodes(max_episodes=max_episodes, verbose=1)
-swa_callback = SWACallback(swa_start=5000, swa_freq=1000, verbose=1)
-save_best_model_callback = SaveBestModelCallback(verbose=1)
+    print_episode_callback = PrintEpisodeCallback(verbose=1)
+    stop_training_callback = StopTrainingOnMaxEpisodes(max_episodes=max_episodes, verbose=1)
+    swa_callback = SWACallback(swa_start=5000, swa_freq=1000, verbose=1)
+    save_best_model_callback = SaveBestModelCallback(verbose=1)
 
-callback = [print_episode_callback, stop_training_callback, swa_callback, save_best_model_callback]
+    callback = [print_episode_callback, stop_training_callback, swa_callback, save_best_model_callback]
 
-model.learn(total_timesteps=10000, callback=callback)
+    model.learn(total_timesteps=10000, callback=callback)
 
-save_location = FIGRURES_DIR / "ppo_robobo_100k.zip"
-print(f'saving robo to: {save_location}')
-model.save(save_location)
+    print(f'saving robo to: {save_location}')
+    model.save(save_location)
 
-obs = env.reset()
+    obs = env.reset()
+
+else:
+    model = PPO.load(save_location, env=env, device='auto', custom_objects={"use_sde": False})    
+
+    model.policy.eval()
+    
+    input_data = env.reset()
+    
+    output = model.predict(input_data, deterministic=True)
 
 def run_all_actions(rob):
     print("Finished!!")
