@@ -2,11 +2,9 @@
 
 import gym
 import torch
-from stable_baselines3 import PPO, TD3
+from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
-from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnMaxEpisodes, EvalCallback
-from stable_baselines3.common.preprocessing import is_image_space
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnMaxEpisodes
 from robobo_interface import SimulationRobobo, IRobobo
 import numpy as np
 from collections import deque
@@ -75,29 +73,26 @@ class RoboboEnv(gym.Env):
         self.observation_space = gym.spaces.Box(low=0, high=1, shape=(6,), dtype=np.float32)
         self.recent_actions = deque(maxlen=30)
         self.total_reward = 0
-        self.current_step = 0
-        self.max_steps = 100
 
     def reset(self):
         self.rob.play_simulation()
         self.rob.set_phone_tilt_blocking(100, 100)
         self.recent_actions.clear()
         self.total_reward = 0
-        self.current_step = 0
         return self.get_state()
 
     def step(self, action):
-        self.current_step += 1
         old_state = self.get_state() # get the CV data for 1st state
+
         left_speed = action[0] * 100
         right_speed = action[1] * 100
-
         self.rob.move_blocking(left_speed, right_speed, 100)
+
         next_state = self.get_state() # get the CV data for 2nd state
         reward = self.get_reward(action, old_state, next_state)
         self.total_reward += reward
-        done = self.is_done(next_state[:4], reward) or self.current_step >= self.max_steps
-        if self.is_done(next_state[:4], reward):# or self.current_step >= self.max_steps:
+        
+        if self.is_done(next_state[:4], reward):
             done = True
             self.rob.stop_simulation()
         self.recent_actions.append(tuple(action))
@@ -153,11 +148,6 @@ class RoboboEnv(gym.Env):
         # Checks if x values are BIG. goal is to not punish for touching food but still account for hitting walls
         if np.sum(IR > 0.8) >= 1:
             reward -= 50
-
-        # reward += (action[0] + action[1]) * 5
-
-        # if action[0] < 0 and action[1] < 0:
-        #     reward -= 10
 
         return reward
 
