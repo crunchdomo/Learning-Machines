@@ -49,30 +49,30 @@ class SWACallback(BaseCallback):
                 self.swa_weights[k] = v / self.swa_n
             self.model.policy.load_state_dict(self.swa_weights)
 
-class SaveBestModelCallback(BaseCallback):
-    def __init__(self, verbose=0):
-        super(SaveBestModelCallback, self).__init__(verbose)
-        self.best_mean_reward = -np.inf
-        self.episode_rewards = []
+# class SaveBestModelCallback(BaseCallback):
+#     def __init__(self, verbose=0):
+#         super(SaveBestModelCallback, self).__init__(verbose)
+#         self.best_mean_reward = -np.inf
+#         self.episode_rewards = []
 
-    def _on_step(self) -> bool:
-        if self.locals['dones'][0]:
-            episode_reward = sum(self.locals['rewards'])
-            self.episode_rewards.append(episode_reward)
-            mean_reward = np.mean(self.episode_rewards[-100:])  # Mean reward over the last 100 episodes
-            if mean_reward > self.best_mean_reward:
-                self.best_mean_reward = mean_reward
-                save_location = FIGRURES_DIR / f"ppo_robobo_best.zip"
-                self.model.save(save_location)
-                print(f"New best model saved with mean reward: {mean_reward}")
-        return True
+#     def _on_step(self) -> bool:
+#         if self.locals['dones'][0]:
+#             episode_reward = sum(self.locals['rewards'])
+#             self.episode_rewards.append(episode_reward)
+#             mean_reward = np.mean(self.episode_rewards[-100:])  # Mean reward over the last 100 episodes
+#             if mean_reward > self.best_mean_reward:
+#                 self.best_mean_reward = mean_reward
+#                 save_location = FIGRURES_DIR / f"ppo_robobo_best.zip"
+#                 self.model.save(save_location)
+#                 print(f"New best model saved with mean reward: {mean_reward}")
+#         return True
 
 class RoboboEnv(gym.Env):
     def __init__(self, rob: IRobobo):
         super(RoboboEnv, self).__init__()
         self.rob = rob
         self.action_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
-        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(6,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(2,), dtype=np.float32)
         self.recent_actions = deque(maxlen=30)
         self.total_reward = 0
         self.window = 10
@@ -100,11 +100,8 @@ class RoboboEnv(gym.Env):
         reward = self.get_reward(action, old_state, next_state)
         self.total_reward += reward
 
-        done = False
-        # done = self.is_done(next_state[:4], reward) or self.current_step >= self.max_steps
-        if self.is_done(next_state[:4], reward):
-            done = True
-            self.rob.stop_simulation()
+        done = self.is_done(next_state, reward)
+
         self.recent_actions.append(tuple(action))
 
         # Reward plotting stuff
@@ -125,10 +122,10 @@ class RoboboEnv(gym.Env):
         return next_state, reward, done, {}
 
     def get_state(self):
-        # IR values
-        ir_values = self.rob.read_irs()
-        ir_values = np.clip(ir_values, 0, 10000)
-        ir_values = ir_values / 10000.0
+        # # IR values
+        # ir_values = self.rob.read_irs()
+        # ir_values = np.clip(ir_values, 0, 10000)
+        # ir_values = ir_values / 10000.0
 
         # GCV values
         image = self.rob.get_image_front()
@@ -137,15 +134,18 @@ class RoboboEnv(gym.Env):
         cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
         image_values = pic_calcs(str(FIGRURES_DIR / "pic.png"))
 
-        state_values = np.concatenate((ir_values[[7,4,5,6]], image_values))
+        # state_values = np.concatenate((ir_values[[7,4,5,6]], image_values))
+        state_values = image_values
         return np.array(state_values, dtype=np.float32)
 
     def get_reward(self, action, old_state, new_state):
         reward = 0
         # modify as required for openCV values in state
-        IR = new_state[:4]
-        old_CV = old_state[4:]
-        new_CV = new_state[4:]
+        # IR = new_state[:4]
+        # old_CV = old_state[4:]
+        old_CV = old_state
+        # new_CV = new_state[4:]
+        new_CV = new_state
 
         '''
         If rob moves closer to block, reward
@@ -170,17 +170,19 @@ class RoboboEnv(gym.Env):
         '''
         reward += (old_distance - new_distance) * 10  
 
-        # reward += (action[0] + action[1]) * 5
+        # if (action[0] + action[1]) < 0:
+        #     reward += (action[0] + action[1]) * 50
     
         # Checks if x values are BIG. 
         # goal is to not punish for touching food but still account for hitting walls
-        if np.sum(IR > 0.8) >= 1:
-            reward -= 50
+        # if np.sum(IR > 0.8) >= 1:
+        #     reward -= 50
 
         return reward
 
     def is_done(self, state, reward):
-        if np.any(state >= 1.0) or np.isnan(reward):
+        if np.isnan(reward)  or self.current_step >= self.max_steps:#np.any(state >= 1.0) or
+            self.rob.stop_simulation()
             return True
         return False
 
@@ -195,8 +197,7 @@ robobo_instance = SimulationRobobo()
 env = DummyVecEnv([lambda: RoboboEnv(robobo_instance)])
 env = VecCheckNan(env, raise_exception=True)
 
-save_location = FIGRURES_DIR / "ppo_robobo_100k.zip"
-train = True
+save_location = FIGRURES_DIR / "ppo_robobo_best.zip"
 
 policy_kwargs = dict(
     net_arch=dict(pi=[64, 64], vf=[128, 128]), 
@@ -204,8 +205,9 @@ policy_kwargs = dict(
     normalize_images=True
 )
 
+train = True # Toggle me to switch between training and testing
 if train:
-    model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
+    model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=2048, batch_size=128, n_epochs=20, clip_range=0.1, ent_coef=0.01)#, policy_kwargs=policy_kwargs
     # model = TD3('MlpPolicy', env, verbose=1, learning_rate=1e-4, batch_size=512)
 
     max_episodes = 1000
@@ -213,9 +215,9 @@ if train:
     print_episode_callback = PrintEpisodeCallback(verbose=1)
     stop_training_callback = StopTrainingOnMaxEpisodes(max_episodes=max_episodes, verbose=1)
     swa_callback = SWACallback(swa_start=5000, swa_freq=1000, verbose=1)
-    save_best_model_callback = SaveBestModelCallback(verbose=1)
+    # save_best_model_callback = SaveBestModelCallback(verbose=1)
 
-    callback = [print_episode_callback, stop_training_callback, swa_callback, save_best_model_callback]
+    callback = [print_episode_callback, stop_training_callback, swa_callback]
 
     model.learn(total_timesteps=10000, callback=callback)
 
@@ -225,13 +227,15 @@ if train:
     obs = env.reset()
 
 else:
-    model = PPO.load(save_location, env=env, device='auto', custom_objects={"use_sde": False})    
+    model = PPO.load(save_location, env=env, device='auto')
 
     model.policy.eval()
-    
-    input_data = env.reset()
-    
-    output = model.predict(input_data, deterministic=True)
+
+    obs = env.reset()
+    done = False
+    while True:
+        action, _states = model.predict(obs, deterministic=True)
+        obs, reward, _, info = env.step(action)
 
 def run_all_actions(rob):
     print("Finished!!")
