@@ -91,7 +91,8 @@ class RoboboEnv(gym.Env):
         next_state = self.get_state() # get the CV data for 2nd state
         reward = self.get_reward(action, old_state, next_state)
         self.total_reward += reward
-        
+
+        done = False
         if self.is_done(next_state[:4], reward):
             done = True
             self.rob.stop_simulation()
@@ -145,7 +146,8 @@ class RoboboEnv(gym.Env):
         '''
         reward += (old_distance - new_distance) * 10  
     
-        # Checks if x values are BIG. goal is to not punish for touching food but still account for hitting walls
+        # Checks if x values are BIG. 
+        # goal is to not punish for touching food but still account for hitting walls
         if np.sum(IR > 0.8) >= 1:
             reward -= 50
 
