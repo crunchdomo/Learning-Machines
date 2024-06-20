@@ -222,9 +222,10 @@ def get_reward(action, old_state, new_state):
 
         return reward
 
-def fitness(individual: DecisionTree, rob: IRobobo):
+def fitness(individual: DecisionTree, rob: IRobobo): # given a tree, make simulation
     if isinstance(rob, SimulationRobobo):
         rob.play_simulation()
+        rob.set_phone_tilt_blocking(100, 100)
 
     state = get_state(rob)
     total_reward = 0
@@ -371,11 +372,21 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
         print(f"Average fitness: {average_fitness_value}")
         print(f"Max fitness: {max_fitness_value}")
 
-        if gen > 3 and (average_fitnesses[-1]-average_fitnesses[-2])/average_fitnesses[-2] <= 0.01: # when fitnesses converge
-            break
+        plot_rewards(average_fitnesses, max_fitnesses)
 
-    plot_rewards(average_fitnesses, max_fitnesses)
+        if gen > 3 and abs(average_fitnesses[-1]-average_fitnesses[-2])/average_fitnesses[-2] <= 0.01: # when fitnesses converge
+            final_fitnesses = [fitness(tree,rob) for tree in population]
+            sorted_population = [tree for _, tree in sorted(zip(final_fitnesses, population), reverse=True)]
+            top_5_individuals = sorted_population[:5]
+            for i in range(5):
+                top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
+            return population, final_fitnesses
+
     final_fitnesses = [fitness(tree,rob) for tree in population]
+    sorted_population = [tree for _, tree in sorted(zip(final_fitnesses, population), reverse=True)]
+    top_5_individuals = sorted_population[:5]
+    for i in range(5):
+        top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
 
     return population, final_fitnesses
 
@@ -385,6 +396,7 @@ def run_trained_model(rob: IRobobo, model_path = 'best.model.EDT.top1'):
     tree = DecisionTree.load_from_file(model_path)
     if os.path.exists(model_path):
         fitness = fitness(tree,rob)
+        print('fitness='+fitness)
         
     else:
         print("No saved model found. Please train the model first.")
@@ -403,11 +415,6 @@ def run_all_actions(rob: IRobobo):
     if train:
         population, final_fitnesses = run_training_simulation(7, 0.5, 100, 0.7, 0.3, 50, rob)
         # max_depth: int, split_p: float, population_size: int, cross_p: float, mut_p: float, generation_cnt: int
-        sorted_population = [tree for _, tree in sorted(zip(final_fitnesses, population), reverse=True)]
-        print(final_fitnesses)
-        top_5_individuals = sorted_population[:5]
-        for i in range(5):
-            top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
 
     else:
         run_trained_model(rob, model_path = str(FIGRURES_DIR)+'best.model.EDT.top1')
