@@ -49,8 +49,7 @@ class Node:
 class DecisionTree:
     def __init__(self, max_depth: int):
         self.max_depth = max_depth
-        
-        # store nodes in an array to avoid
+        # store nodes in an array
         # left child = parent index * 2
         # right child = parent index * 2 + 1
         # root node = index 1
@@ -213,7 +212,6 @@ def get_reward(action, old_state, new_state):
         reward += (old_distance - new_distance) * 0.1  
 
         # reward += (action[0] + action[1]) * 5
-    
         # Checks if x values are BIG. 
         # goal is to not punish for touching food but still account for hitting walls
         if np.sum(IR[[7,4,5,6]] > 0.8*200) >= 1:
@@ -294,21 +292,22 @@ def crossover(p1: DecisionTree, p2: DecisionTree):
     return c1, c2
 
 def mutate(tree: DecisionTree):
-    # select a random node
-    valid = [i for i in range(len(tree.nodes)) if tree.nodes[i] is not None]
-    ind = random.choice(valid)
-    
-    if tree.nodes[ind].action is None:
-        # if selected node is a split node
-        feature = random.choice(range(num_variables))
-        tree.nodes[ind] = Node(
-            feature = feature, 
-            split_val = random.uniform(0, 75)
-        )
-    else:
-        # if selected node is a leaf node
-        old_action = tree.nodes[ind].action
-        tree.nodes[ind] = Node(action = [value+random.uniform(-20, 20) for value in old_action])
+    for _ in range(5):
+        # select a random node
+        valid = [i for i in range(len(tree.nodes)) if tree.nodes[i] is not None]
+        ind = random.choice(valid)
+        
+        if tree.nodes[ind].action is None:
+            # if selected node is a split node
+            feature = random.choice(range(num_variables))
+            tree.nodes[ind] = Node(
+                feature = feature, 
+                split_val = random.uniform(0, 75)
+            )
+        else:
+            # if selected node is a leaf node
+            old_action = tree.nodes[ind].action
+            tree.nodes[ind] = Node(action = [value+random.uniform(-20, 20) for value in old_action])
 
 def plot_rewards(average_fitnesses, max_fitnesses):
     plt.figure()
@@ -338,6 +337,13 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
     for gen in range(generation_cnt):
         # select the best individuals from population
         fitnesses = [fitness(tree,rob) for tree in tqdm(population)]
+        sorted_population = [tree for _, tree in sorted(zip(fitnesses, population), key=lambda x: x[0], reverse=True)]
+        top_5_individuals = sorted_population[:5]
+        for i in range(5):
+            top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
+
+
+
         
         # selection + crossover
         new_pop = []
@@ -373,22 +379,23 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
 
         plot_rewards(average_fitnesses, max_fitnesses)
 
-        if gen > 3 and abs((average_fitnesses[-1]-average_fitnesses[-2])/average_fitnesses[-2]) <= 0.01: # when fitnesses converge
-            final_fitnesses = [fitness(tree,rob) for tree in population]
-            sorted_population = [tree for _, tree in sorted(zip(final_fitnesses, population), reverse=True)]
-            top_5_individuals = sorted_population[:5]
-            for i in range(5):
-                top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
-            return population, final_fitnesses
+        if gen > 3 and (average_fitnesses[-1]-average_fitnesses[-2])/average_fitnesses[-2] <= 0.01: # when fitnesses converge
+            if (max_fitnesses[-1]-max_fitnesses[-2])/max_fitnesses[-2] <= 0.01:
+                final_fitnesses = [fitness(tree,rob) for tree in population]
+                sorted_population = [tree for _, tree in sorted(zip(fitnesses, population), key=lambda x: x[0], reverse=True)]
+                top_5_individuals = sorted_population[:5]
+                for i in range(5):
+                    top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
+                return population, final_fitnesses
 
     final_fitnesses = [fitness(tree,rob) for tree in population]
-    sorted_population = [tree for _, tree in sorted(zip(final_fitnesses, population), reverse=True)]
+    sorted_population = [tree for _, tree in sorted(zip(fitnesses, population), key=lambda x: x[0], reverse=True)]
+
     top_5_individuals = sorted_population[:5]
     for i in range(5):
         top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
 
     return population, final_fitnesses
-
 
 
 def run_trained_model(rob: IRobobo, model_path = 'best.model.EDT.top1'):
