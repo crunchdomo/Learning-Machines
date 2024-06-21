@@ -5,7 +5,7 @@ import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
 from stable_baselines3.common.callbacks import BaseCallback, StopTrainingOnMaxEpisodes
-from robobo_interface import SimulationRobobo, IRobobo
+from robobo_interface import SimulationRobobo, IRobobo, HardwareRobobo
 import numpy as np
 import pandas as pd
 from collections import deque
@@ -82,7 +82,8 @@ class RoboboEnv(gym.Env):
         self.max_steps = 500
 
     def reset(self):
-        self.rob.play_simulation()
+        if isinstance(self.rob, SimulationRobobo):
+            self.rob.play_simulation()
         self.rob.set_phone_tilt_blocking(100, 100)
         self.last_reward = 0
         self.done = False
@@ -110,8 +111,8 @@ class RoboboEnv(gym.Env):
 
         self.done = self.is_done(next_state[:4], self.reward) or self.current_step >= self.max_steps
         if self.done:
-            self.rob.stop_simulation()
-        self.recent_actions.append(tuple(action))
+            if isinstance(self.rob, SimulationRobobo):
+                self.rob.stop_simulation()
 
         # Reward plotting stuff
         self.rewards.append(self.reward)
@@ -194,7 +195,8 @@ class RoboboEnv(gym.Env):
         pass
 
     def close(self):
-        self.rob.stop_simulation()
+        if isinstance(self.rob, SimulationRobobo):
+            self.rob.stop_simulation()
 
 
 robobo_instance = SimulationRobobo()
@@ -202,7 +204,7 @@ env = DummyVecEnv([lambda: RoboboEnv(robobo_instance)])
 env = VecCheckNan(env, raise_exception=True)
 
 save_location = FIGRURES_DIR / "ppo_robobo_100k.zip"
-train = True
+train = False
 
 policy_kwargs = dict(
     net_arch=dict(pi=[64, 64], vf=[128, 128]), 
@@ -223,7 +225,7 @@ if train:
 
     callback = [print_episode_callback, stop_training_callback, swa_callback, save_best_model_callback]
 
-    model.learn(total_timesteps=10000, callback=callback)
+    model.learn(total_timesteps=5000, callback=callback)
 
     print(f'saving robo to: {save_location}')
     model.save(save_location)
@@ -231,13 +233,17 @@ if train:
     obs = env.reset()
 
 else:
-    model = PPO.load(save_location, env=env, device='auto', custom_objects={"use_sde": False})    
+        # robobo_instance = SimulationRobobo()
+        robobo_instance = HardwareRobobo()
+        env = DummyVecEnv([lambda: RoboboEnv(robobo_instance)])
+        model = PPO.load(save_location, env=env, device='auto')    
 
-    model.policy.eval()
-    
-    input_data = env.reset()
-    
-    output = model.predict(input_data, deterministic=True)
+        obs = env.reset()
+        done = False
+        while True:
+            action, _states = model.predict(obs, deterministic=True)
+            obs, reward, _, info = env.step(action)
+            model.policy.eval()
 
 def run_all_actions(rob):
     print("Finished!!")
