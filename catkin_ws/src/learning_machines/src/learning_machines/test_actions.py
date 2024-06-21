@@ -199,22 +199,15 @@ class RoboboEnv(gym.Env):
             self.rob.stop_simulation()
 
 
-robobo_instance = SimulationRobobo()
-env = DummyVecEnv([lambda: RoboboEnv(robobo_instance)])
-env = VecCheckNan(env, raise_exception=True)
-
 save_location = FIGRURES_DIR / "ppo_robobo_100k.zip"
 train = False
 
-policy_kwargs = dict(
-    net_arch=dict(pi=[64, 64], vf=[128, 128]), 
-    activation_fn=torch.nn.ReLU,
-    normalize_images=True
-)
-
 if train:
-    model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=100, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
-    # model = TD3('MlpPolicy', env, verbose=1, learning_rate=1e-4, batch_size=512)
+    robobo_instance = SimulationRobobo()
+    env = DummyVecEnv([lambda: RoboboEnv(robobo_instance)])
+    env = VecCheckNan(env, raise_exception=True)
+
+    model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=100, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01)
 
     max_episodes = 1000
 
@@ -225,7 +218,7 @@ if train:
 
     callback = [print_episode_callback, stop_training_callback, swa_callback, save_best_model_callback]
 
-    model.learn(total_timesteps=5000, callback=callback)
+    model.learn(total_timesteps=3000, callback=callback)
 
     print(f'saving robo to: {save_location}')
     model.save(save_location)
