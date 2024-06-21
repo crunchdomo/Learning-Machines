@@ -20,7 +20,7 @@ from robobo_interface import (
     HardwareRobobo,
 )
 
-
+from tqdm import tqdm
 
 import gym
 from stable_baselines3 import PPO
@@ -34,7 +34,7 @@ import json
 
 # Define the Decision Tree model
 
-num_variables = 6
+num_variables = 10
 
 class Node:
     def __init__(self, feature: int = None, split_val: float = None, action: list = None):
@@ -170,25 +170,23 @@ def generate_random(max_depth: int, split_p: float):
 def get_state(rob: IRobobo):
     # IR values
     ir_values = rob.read_irs()
-    ir_values = np.clip(ir_values, 0, 10000)
-    ir_values = ir_values / 10000.0
 
     # GCV values
     image = rob.get_image_front()
     if isinstance(rob, SimulationRobobo):
         image = cv2.flip(image, 0)
     cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
-    image_values = pic_calcs(str(FIGRURES_DIR / "pic.png"))*100
+    image_values = [100*v for v in pic_calcs(str(FIGRURES_DIR / "pic.png"))]
 
-    state_values = np.concatenate((ir_values[[7,4,5,6]], image_values))
+    state_values = np.concatenate((ir_values, image_values))
     return np.array(state_values, dtype=np.float32)
 
 def get_reward(action, old_state, new_state):
         reward = 0
         # modify as required for openCV values in state
-        IR = new_state[:4]
-        old_CV = old_state[4:]
-        new_CV = new_state[4:]
+        IR = new_state[:8]
+        old_CV = old_state[8:]
+        new_CV = new_state[8:]
 
         '''
         If rob moves closer to block, reward
@@ -217,7 +215,7 @@ def get_reward(action, old_state, new_state):
     
         # Checks if x values are BIG. 
         # goal is to not punish for touching food but still account for hitting walls
-        if np.sum(IR > 0.8) >= 1:
+        if np.sum(IR[[7,4,5,6]] > 0.8*200) >= 1:
             reward -= 50
 
         return reward
@@ -244,7 +242,7 @@ def fitness(individual: DecisionTree, rob: IRobobo): # given a tree, make simula
         total_reward += reward
         state = next_state
 
-        if t > 50:
+        if t > 40:
             if isinstance(rob, SimulationRobobo):
                 rob.stop_simulation()
             break
@@ -336,7 +334,7 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
     max_fitnesses = []
 
     # main loop
-    for gen in range(generation_cnt):
+    for gen in tqdm(range(generation_cnt)):
         # select the best individuals from population
         fitnesses = [fitness(tree,rob) for tree in population]
         
@@ -374,7 +372,7 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
 
         plot_rewards(average_fitnesses, max_fitnesses)
 
-        if gen > 3 and abs(average_fitnesses[-1]-average_fitnesses[-2])/average_fitnesses[-2] <= 0.01: # when fitnesses converge
+        if gen > 3 and abs(average_fitnesses[-1]-average_fitnesses[-2]/average_fitnesses[-2]) <= 0.01: # when fitnesses converge
             final_fitnesses = [fitness(tree,rob) for tree in population]
             sorted_population = [tree for _, tree in sorted(zip(final_fitnesses, population), reverse=True)]
             top_5_individuals = sorted_population[:5]
@@ -413,7 +411,7 @@ rob = SimulationRobobo()
 train = True
 def run_all_actions(rob: IRobobo):
     if train:
-        population, final_fitnesses = run_training_simulation(7, 0.5, 100, 0.7, 0.3, 50, rob)
+        population, final_fitnesses = run_training_simulation(8, 0.6, 70, 0.8, 0.3, 50, rob)
         # max_depth: int, split_p: float, population_size: int, cross_p: float, mut_p: float, generation_cnt: int
 
     else:
