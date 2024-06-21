@@ -73,18 +73,19 @@ class RoboboEnv(gym.Env):
         self.rob = rob
         self.action_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
         self.observation_space = gym.spaces.Box(low=0, high=1, shape=(6,), dtype=np.float32)
-        self.recent_actions = deque(maxlen=30)
+        self.last_reward = 0
         self.total_reward = 0
+        self.done = False
         self.window = 10
         self.rewards = []
         self.current_step = 0
-        self.max_steps = 100
+        self.max_steps = 500
 
     def reset(self):
         self.rob.play_simulation()
         self.rob.set_phone_tilt_blocking(100, 100)
-        self.recent_actions.clear()
-        self.total_reward = 0
+        self.last_reward = 0
+        self.done = False
         self.current_step = 0
         return self.get_state()
 
@@ -97,18 +98,23 @@ class RoboboEnv(gym.Env):
         self.rob.move_blocking(left_speed, right_speed, 100)
 
         next_state = self.get_state() # get the CV data for 2nd state
-        reward = self.get_reward(action, old_state, next_state)
-        self.total_reward += reward
+        
+        self.total_reward = self.get_reward(action, old_state, next_state)
 
-        done = False
-        # done = self.is_done(next_state[:4], reward) or self.current_step >= self.max_steps
-        if self.is_done(next_state[:4], reward):
-            done = True
+        self.reward = self.total_reward - self.last_reward
+
+        self.last_reward = self.total_reward
+
+        self.done = self.is_done(next_state, self.reward)
+
+
+        self.done = self.is_done(next_state[:4], self.reward) or self.current_step >= self.max_steps
+        if self.done:
             self.rob.stop_simulation()
         self.recent_actions.append(tuple(action))
 
         # Reward plotting stuff
-        self.rewards.append(reward)
+        self.rewards.append(self.reward)
         rewards_series = pd.Series(self.rewards)
         rolling_avg = rewards_series.rolling(window=self.window).mean()
         if self.current_step % 4 == 0:
@@ -122,7 +128,7 @@ class RoboboEnv(gym.Env):
             plt.savefig(FIGRURES_DIR / f'training_rewards.png')
             plt.close()
 
-        return next_state, reward, done, {}
+        return next_state, self.reward, self.done, {}
 
     def get_state(self):
         # IR values
@@ -205,7 +211,7 @@ policy_kwargs = dict(
 )
 
 if train:
-    model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=2048, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
+    model = PPO('MlpPolicy', env, verbose=1, learning_rate=1e-4, n_steps=100, batch_size=64, n_epochs=10, clip_range=0.1, ent_coef=0.01, policy_kwargs=policy_kwargs)
     # model = TD3('MlpPolicy', env, verbose=1, learning_rate=1e-4, batch_size=512)
 
     max_episodes = 1000
