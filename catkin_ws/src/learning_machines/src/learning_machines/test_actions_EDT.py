@@ -170,6 +170,7 @@ def generate_random(max_depth: int, split_p: float):
 def get_state(rob: IRobobo):
     # IR values
     ir_values = rob.read_irs()
+    ir_values = np.clip(ir_values, 0, 200)
 
     # GCV values
     image = rob.get_image_front()
@@ -195,21 +196,21 @@ def get_reward(action, old_state, new_state):
         '''
         # calc for bottom dist
         if old_CV[0] < new_CV[0]:
-            reward += new_CV[0] * 10
-        elif new_CV[0] == 1 and old_CV[0] == 1:
+            reward += new_CV[0] * 0.1
+        elif new_CV[0] == 100 and old_CV[0] == 100:
             reward += 10
         elif old_CV[0] > new_CV[0]:
-            reward += (new_CV[0] - old_CV[0]) * 50
+            reward += (new_CV[0] - old_CV[0]) * 0.5
 
         # calc for side to side dist
-        old_distance = abs(old_CV[1] - 0.5)
-        new_distance = abs(new_CV[1] - 0.5)
+        old_distance = abs(old_CV[1] - 50)
+        new_distance = abs(new_CV[1] - 50)
 
         '''
         Reward if block gets closer to middle
         Punish if it gets further from middle
         '''
-        reward += (old_distance - new_distance) * 10  
+        reward += (old_distance - new_distance) * 0.1  
 
         # reward += (action[0] + action[1]) * 5
     
@@ -242,7 +243,7 @@ def fitness(individual: DecisionTree, rob: IRobobo): # given a tree, make simula
         total_reward += reward
         state = next_state
 
-        if t > 40:
+        if t > 50:
             if isinstance(rob, SimulationRobobo):
                 rob.stop_simulation()
             break
@@ -334,9 +335,9 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
     max_fitnesses = []
 
     # main loop
-    for gen in tqdm(range(generation_cnt)):
+    for gen in range(generation_cnt):
         # select the best individuals from population
-        fitnesses = [fitness(tree,rob) for tree in population]
+        fitnesses = [fitness(tree,rob) for tree in tqdm(population)]
         
         # selection + crossover
         new_pop = []
@@ -372,7 +373,7 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
 
         plot_rewards(average_fitnesses, max_fitnesses)
 
-        if gen > 3 and abs(average_fitnesses[-1]-average_fitnesses[-2]/average_fitnesses[-2]) <= 0.01: # when fitnesses converge
+        if gen > 3 and abs((average_fitnesses[-1]-average_fitnesses[-2])/average_fitnesses[-2]) <= 0.01: # when fitnesses converge
             final_fitnesses = [fitness(tree,rob) for tree in population]
             sorted_population = [tree for _, tree in sorted(zip(final_fitnesses, population), reverse=True)]
             top_5_individuals = sorted_population[:5]
