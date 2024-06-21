@@ -381,12 +381,7 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
 
         if gen > 3 and (average_fitnesses[-1]-average_fitnesses[-2])/average_fitnesses[-2] <= 0.01: # when fitnesses converge
             if (max_fitnesses[-1]-max_fitnesses[-2])/max_fitnesses[-2] <= 0.01:
-                final_fitnesses = [fitness(tree,rob) for tree in population]
-                sorted_population = [tree for _, tree in sorted(zip(fitnesses, population), key=lambda x: x[0], reverse=True)]
-                top_5_individuals = sorted_population[:5]
-                for i in range(5):
-                    top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
-                return population, final_fitnesses
+                break
 
     final_fitnesses = [fitness(tree,rob) for tree in population]
     sorted_population = [tree for _, tree in sorted(zip(fitnesses, population), key=lambda x: x[0], reverse=True)]
