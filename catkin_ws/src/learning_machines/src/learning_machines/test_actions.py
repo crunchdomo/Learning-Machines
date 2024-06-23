@@ -6,10 +6,8 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from robobo_interface import SimulationRobobo, IRobobo
 import numpy as np
 import pandas as pd
-from collections import deque
 from data_files import FIGRURES_DIR
 from .process_image import process_image as pic_calcs
-import cv2
 import matplotlib.pyplot as plt
 
 class RoboboEnv(gym.Env):
@@ -17,7 +15,7 @@ class RoboboEnv(gym.Env):
         super(RoboboEnv, self).__init__()
         self.rob = rob
         self.action_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32)
-        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(2,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=0, high=1, shape=(8,), dtype=np.float32)
         self.total_reward = 0
         self.last_reward = 0
         self.reward = 0
@@ -25,8 +23,10 @@ class RoboboEnv(gym.Env):
         self.done = False
 
     def reset(self):
-        self.rob.play_simulation()
-        self.rob.set_phone_tilt_blocking(100, 100)
+        if isinstance(self.rob, SimulationRobobo):
+            self.rob.stop_simulation()
+            self.rob.play_simulation()
+        # self.rob.set_phone_tilt_blocking(100, 100)
         self.last_reward = 0
         self.done = False
         return self.get_state()
@@ -34,17 +34,19 @@ class RoboboEnv(gym.Env):
     def step(self, action):
         left_speed = action[0] * 100
         right_speed = action[1] * 100
-        self.rob.move_blocking(left_speed, right_speed, 500)
+        self.rob.move_blocking(left_speed, right_speed, 100)
 
         next_state = self.get_state()
 
-        self.total_reward = self.get_reward(next_state)
-
+        self.total_reward = self.get_reward(next_state, action)
         self.reward = self.total_reward - self.last_reward
+        self.last_reward = self.total_reward
+
+        if self.is_done(next_state):
+            self.reward = -5
+            self.done = True
 
         self.rewards.append(self.reward)
-
-        self.last_reward = self.total_reward
 
         rewards_series = pd.Series(self.rewards)
         rolling_avg = rewards_series.rolling(window=100).mean()
@@ -60,42 +62,30 @@ class RoboboEnv(gym.Env):
             plt.savefig(FIGRURES_DIR / f'training_rewards.png')
             plt.close()
 
-        self.done = self.is_done(next_state, self.reward)
-
         return next_state, self.reward, self.done, {}
 
     def get_state(self):
-        # CV values
-        image = self.rob.get_image_front()
-        if isinstance(self.rob, SimulationRobobo):
-            image = cv2.flip(image, 0)
-        cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
-        image_values = pic_calcs(str(FIGRURES_DIR / "pic.png"))
+        # IR values
+        ir_values = self.rob.read_irs()
+        ir_values = np.clip(ir_values, 0, 10000)
+        ir_values = ir_values / 10000.0
 
-        return np.array(image_values, dtype=np.float32)
+        state_values = ir_values#[[7,4,5,6]]
+        return np.array(state_values, dtype=np.float32)
 
-    def get_reward(self, CV):
-        # reward = how close to bottom - how far from middle
-        # best score is 1. worst is -0.5
-        reward = (CV[0]/2) - abs(CV[1] - 0.5)
-
-        return reward
-
-    def is_done(self, state, reward):
-        IRs = np.array(self.rob.read_irs())
-        if np.any(IRs >= 1000):
-            self.rob.stop_simulation()
+    def get_reward(self, state, action):
+        return (action[0]/2 + action[1]/2)    
+    
+    def is_done(self, state):
+        IRs = np.array(state)
+        if np.any(IRs >= 0.6):
             return True
-        return False
 
     def render(self, mode='human'):
         pass
 
     def close(self):
         self.rob.stop_simulation()
-
-
-# rob = SimulationRobobo()
 
 def run_all_actions(rob):
 
@@ -104,22 +94,33 @@ def run_all_actions(rob):
 
     if isinstance(rob, SimulationRobobo):
         env = DummyVecEnv([lambda: RoboboEnv(rob)])
+        
         if train:
-            model = PPO('MlpPolicy', env, verbose=1)
-
+            model = PPO('MlpPolicy', env, verbose=1, 
+                        ent_coef=0.01,
+                        learning_rate=3e-4,
+                        n_steps=2048,
+                        batch_size=64,
+                        n_epochs=10,
+                        gamma=0.99,
+                        gae_lambda=0.95,
+                        clip_range=0.2)
+            
             max_episodes = 1000
-            TIMESTEPS = 100
-
+            TIMESTEPS = 2048
             env.reset()
-
+            total_timesteps = 0
             episode = 0
+
             while episode < max_episodes:
                 episode += 1
                 print(f"ep:{episode}")
+
                 model.learn(total_timesteps=TIMESTEPS, reset_num_timesteps=False)
+                total_timesteps += TIMESTEPS
 
                 model.save(save_location)
-
+                print(f"Total timesteps: {total_timesteps}")
 
         else:
             model = PPO.load(save_location, env=env, device='auto')
