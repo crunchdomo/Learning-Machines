@@ -6,4 +6,4 @@ opencv-python~=4.8
 seaborn
 matplotlib
 pandas
-keras
+torch
