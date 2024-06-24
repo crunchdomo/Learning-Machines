@@ -3,11 +3,11 @@ from robobo_interface import SimulationRobobo, IRobobo
 import pandas as pd
 from data_files import FIGRURES_DIR
 import matplotlib.pyplot as plt
-
-import numpy as np
-import keras
-import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from collections import deque
+import random
 
 class RoboboEnv:
     def __init__(self, rob: IRobobo):
@@ -16,32 +16,40 @@ class RoboboEnv:
         self.observation_space = 4
         self.reset()
         self.rewards = []
+        self.reward = 0
         
     def reset(self):
         if isinstance(self.rob, SimulationRobobo):
             self.rob.stop_simulation()
             self.rob.play_simulation()
         # self.rob.set_phone_tilt_blocking(100, 100)
+        self.reward = 0
         return self.get_state()
 
     def step(self, action):
         # Simulate movement and update state
         left_speed, right_speed = action
 
-        left_speed = action[0] * 100
-        right_speed = action[1] * 100
-        self.rob.move_blocking(left_speed, right_speed, 100)
+        self.rob.move_blocking(left_speed*100, right_speed*100, 100)
 
         # Update state based on action (simplified)
-        self.state = self.get_state()  # Placeholder for actual sensor readings
-        
+        self.state = self.get_state()
+
         # Calculate reward
-        reward = (left_speed/2 + right_speed/2)
+        forward_movement = (left_speed + right_speed) / 2
+        collision_penalty = -np.mean(self.state)  # Higher IR values indicate closer obstacles
+        stop_penalty = -1 if forward_movement < 0.1 else 0  # Penalize if the robot is almost stopping
+
+        self.reward = forward_movement + collision_penalty + stop_penalty
         
         # Check if done
         done = np.any(self.state >= 0.6)
+        if done:
+            self.reward = -1
 
-        self.rewards.append(reward)
+        self.reward = np.clip(self.reward, -1, 1)
+
+        self.rewards.append(self.reward)
         rewards_series = pd.Series(self.rewards)
         rolling_avg = rewards_series.rolling(window=100).mean()
         
@@ -56,7 +64,7 @@ class RoboboEnv:
             plt.savefig(FIGRURES_DIR / f'training_rewards.png')
             plt.close()
         
-        return self.state, reward, done, {}
+        return self.state, self.reward, done, {}
 
     def get_state(self):
         # IR values
@@ -72,20 +80,24 @@ class DQNAgent:
         self.state_size = state_size
         self.action_size = action_size
         self.memory = deque(maxlen=2000)
-        self.gamma = 0.95    # discount rate
-        self.epsilon = 1.0   # exploration rate
+        self.gamma = 0.95  # discount rate
+        self.epsilon = 1.0  # exploration rate
         self.epsilon_min = 0.01
         self.epsilon_decay = 0.995
         self.learning_rate = 0.001
-        self.model = self._build_model()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self._build_model().to(self.device)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        self.criterion = nn.MSELoss()
 
     def _build_model(self):
-        model = keras.Sequential([
-            keras.layers.Dense(24, input_dim=self.state_size, activation='relu'),
-            keras.layers.Dense(24, activation='relu'),
-            keras.layers.Dense(self.action_size, activation='linear')
-        ])
-        model.compile(loss='mse', optimizer=keras.optimizers.Adam(lr=self.learning_rate))
+        model = nn.Sequential(
+            nn.Linear(self.state_size, 24),
+            nn.ReLU(),
+            nn.Linear(24, 24),
+            nn.ReLU(),
+            nn.Linear(24, self.action_size)
+        )
         return model
 
     def remember(self, state, action, reward, next_state, done):
@@ -93,30 +105,44 @@ class DQNAgent:
 
     def act(self, state):
         if np.random.rand() <= self.epsilon:
-            return np.random.uniform(-1, 1, self.action_size)
-        act_values = self.model.predict(state.reshape(1, -1))
-        return act_values[0]
+            return np.random.uniform(0, 1, self.action_size)
+        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            act_values = self.model(state)
+        return np.clip(act_values.cpu().numpy()[0], 0, 1)
 
     def replay(self, batch_size):
         minibatch = random.sample(self.memory, batch_size)
         for state, action, reward, next_state, done in minibatch:
+            state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            next_state = torch.FloatTensor(next_state).unsqueeze(0).to(self.device)
+            action = torch.FloatTensor(action).unsqueeze(0).to(self.device)
+            
             target = reward
             if not done:
-                target = reward + self.gamma * np.amax(self.model.predict(next_state.reshape(1, -1))[0])
-            target_f = self.model.predict(state.reshape(1, -1))
-            target_f[0] = target
-            self.model.fit(state.reshape(1, -1), target_f, epochs=1, verbose=0)
+                with torch.no_grad():
+                    target = reward + self.gamma * torch.max(self.model(next_state)).item()
+            
+            current_q_values = self.model(state)
+            target_q_values = current_q_values.clone()
+            target_q_values[:, :] = target
+            
+            self.optimizer.zero_grad()
+            loss = self.criterion(current_q_values, target_q_values)
+            loss.backward()
+            self.optimizer.step()
+
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
-def main(rob):
+def run_all_actions(rob):
     env = RoboboEnv(rob)
     state_size = env.observation_space
     action_size = env.action_space
     agent = DQNAgent(state_size, action_size)
     batch_size = 32
-
     episodes = 1000
+
     for episode in range(episodes):
         state = env.reset()
         done = False
@@ -134,6 +160,3 @@ def main(rob):
 
         if episode % 100 == 0:
             print(f"Episode {episode}, Total Reward: {total_reward}")
-
-def run_all_actions(rob):
-    main(rob)
