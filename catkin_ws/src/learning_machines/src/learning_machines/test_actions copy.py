@@ -1,13 +1,10 @@
 import numpy as np
+from pyqlearning.functionapproximator import FunctionApproximator
+from pyqlearning.q_learning import QLearning
 from robobo_interface import SimulationRobobo, IRobobo
 import pandas as pd
 from data_files import FIGRURES_DIR
 import matplotlib.pyplot as plt
-
-import numpy as np
-import keras
-import random
-from collections import deque
 
 class RoboboEnv:
     def __init__(self, rob: IRobobo):
@@ -67,54 +64,35 @@ class RoboboEnv:
         state_values = ir_values[[7,4,5,6]]
         return np.array(state_values, dtype=np.float32)
 
-class DQNAgent:
-    def __init__(self, state_size, action_size):
-        self.state_size = state_size
-        self.action_size = action_size
-        self.memory = deque(maxlen=2000)
-        self.gamma = 0.95    # discount rate
-        self.epsilon = 1.0   # exploration rate
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
-        self.learning_rate = 0.001
-        self.model = self._build_model()
+class RoboboDQN(FunctionApproximator):
+    def __init__(self, input_dim, output_dim):
+        super(RoboboDQN, self).__init__(input_dim, output_dim)
+        # Initialize your neural network here
+        # For simplicity, we'll use a basic linear model
+        self.weights = np.random.rand(input_dim, output_dim)
 
-    def _build_model(self):
-        model = keras.Sequential([
-            keras.layers.Dense(24, input_dim=self.state_size, activation='relu'),
-            keras.layers.Dense(24, activation='relu'),
-            keras.layers.Dense(self.action_size, activation='linear')
-        ])
-        model.compile(loss='mse', optimizer=keras.optimizers.Adam(lr=self.learning_rate))
-        return model
+    def learn(self, x, y):
+        # Implement learning algorithm (e.g., gradient descent)
+        learning_rate = 0.01
+        prediction = self.inference(x)
+        error = y - prediction
+        self.weights += learning_rate * np.outer(x, error)
 
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-
-    def act(self, state):
-        if np.random.rand() <= self.epsilon:
-            return np.random.uniform(-1, 1, self.action_size)
-        act_values = self.model.predict(state.reshape(1, -1))
-        return act_values[0]
-
-    def replay(self, batch_size):
-        minibatch = random.sample(self.memory, batch_size)
-        for state, action, reward, next_state, done in minibatch:
-            target = reward
-            if not done:
-                target = reward + self.gamma * np.amax(self.model.predict(next_state.reshape(1, -1))[0])
-            target_f = self.model.predict(state.reshape(1, -1))
-            target_f[0] = target
-            self.model.fit(state.reshape(1, -1), target_f, epochs=1, verbose=0)
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+    def inference(self, x):
+        return np.dot(x, self.weights)
 
 def main(rob):
     env = RoboboEnv(rob)
-    state_size = env.observation_space
-    action_size = env.action_space
-    agent = DQNAgent(state_size, action_size)
-    batch_size = 32
+    dqn = RoboboDQN(env.observation_space, env.action_space)
+    
+    q_learning = QLearning(
+        gamma=0.99,
+        alpha=0.1,
+        epsilon=0.1,
+        function_approximator=dqn,
+        state_dim=env.observation_space,
+        action_dim=env.action_space
+    )
 
     episodes = 1000
     for episode in range(episodes):
@@ -123,14 +101,11 @@ def main(rob):
         total_reward = 0
 
         while not done:
-            action = agent.act(state)
+            action = q_learning.select_action(state)
             next_state, reward, done, _ = env.step(action)
-            agent.remember(state, action, reward, next_state, done)
+            q_learning.update(state, action, reward, next_state, done)
             state = next_state
             total_reward += reward
-
-            if len(agent.memory) > batch_size:
-                agent.replay(batch_size)
 
         if episode % 100 == 0:
             print(f"Episode {episode}, Total Reward: {total_reward}")
