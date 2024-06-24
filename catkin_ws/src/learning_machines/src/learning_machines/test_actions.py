@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import numpy as np
 from robobo_interface import SimulationRobobo, IRobobo
 import pandas as pd
@@ -8,7 +10,101 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 from torch.distributions import Normal
-import random
+import cv2
+
+def process_image(image_path, colour='green'):
+    """
+    Parameters
+    ----------
+    image_path : str
+        The path to the image file.
+    Returns
+    -------
+    tuple
+        A tuple containing two float values:
+        - normalized_distance_bottom: Closeness to bottom of the image. Returns 1 at bottom, 0 at top.
+        - normalized_distance_side: Closeness to right of the image. Returns 1 at the right, 0 at the left.
+        - Returns 0 in both cases if no box is found.
+    """
+    # Load the image
+    image = cv2.imread(image_path)
+
+    # Resize the image to speed up processing
+    scale_percent = 50  # percent of original size
+    width = int(image.shape[1] * scale_percent / 100)
+    height = int(image.shape[0] * scale_percent / 100)
+    dim = (width, height)
+    resized_image = cv2.resize(image, dim, interpolation=cv2.INTER_AREA)
+
+    # Convert the image to HSV color space
+    hsv = cv2.cvtColor(resized_image, cv2.COLOR_BGR2HSV)
+
+    if colour == 'green':
+        # Define range for green color and create a mask
+        lower_green = np.array([40, 100, 100])
+        # lower_green = np.array([35, 40, 40])
+        upper_green = np.array([85, 255, 255])
+        mask = cv2.inRange(hsv, lower_green, upper_green)
+
+    if colour == 'red':
+        # Define range for red color and create a mask
+        # Red wraps around the HSV color space, so we need two ranges
+        lower_red1 = np.array([0, 100, 100])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([160, 100, 100])
+        upper_red2 = np.array([180, 255, 255])
+        
+        # Create masks for both ranges
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        
+        # Combine the masks
+        mask = cv2.bitwise_or(mask1, mask2)
+
+    # Display the mask for debugging
+    # cv2.imshow('Mask', mask)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+
+    # Find contours in the mask
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Get image dimensions
+    image_height, image_width = resized_image.shape[:2]
+
+    closest_contour = None
+    min_distance_from_bottom = float('inf')
+
+    for contour in contours:
+        # Get the bounding box of the contour
+        x, y, w, h = cv2.boundingRect(contour)
+        box_bottom = y + h
+
+        # Calculate the distance to the bottom of the image
+        distance_from_bottom = image_height - box_bottom
+
+        if distance_from_bottom < min_distance_from_bottom:
+            min_distance_from_bottom = distance_from_bottom
+            closest_contour = contour
+
+    if closest_contour is not None:
+        # Get the bounding box of the closest contour
+        x, y, w, h = cv2.boundingRect(closest_contour)
+        box_bottom = y + h
+        box_center_x = x + w / 2
+
+        # Calculate the distance from the bottom of the image
+        distance_from_bottom = image_height - box_bottom
+
+        # Normalize the distance to a value between 0 and 1
+        normalized_distance_bottom = 1 - (distance_from_bottom / image_height)
+
+        # Normalize the horizontal position to a value between 0 and 1
+        normalized_distance_right = box_center_x / image_width
+
+        return normalized_distance_bottom, normalized_distance_right
+    else:
+        return 0, 0
 
 class ActorCritic(nn.Module):
     def __init__(self, state_size, action_size):
@@ -19,7 +115,7 @@ class ActorCritic(nn.Module):
             nn.Linear(64, 64),
             nn.ReLU(),
             nn.Linear(64, action_size),
-            nn.Tanh()
+            nn.Sigmoid()
         )
         self.critic = nn.Sequential(
             nn.Linear(state_size, 64),
@@ -101,41 +197,61 @@ class RoboboEnv:
     def __init__(self, rob: IRobobo):
         self.rob = rob
         self.action_space = 2
-        self.observation_space = 4
+        self.observation_space = 5
         self.reset()
         self.rewards = []
         self.reward = 0
+        self.steps = 0
         
     def reset(self):
         if isinstance(self.rob, SimulationRobobo):
             self.rob.stop_simulation()
             self.rob.play_simulation()
-        # self.rob.set_phone_tilt_blocking(100, 100)
+        self.rob.set_phone_tilt_blocking(120, 100)
         self.reward = 0
+        self.steps = 0
         return self.get_state()
 
     def step(self, action):
+        self.steps += 1
         # Simulate movement and update state
         left_speed, right_speed = action
 
-        self.rob.move_blocking(left_speed*100, right_speed*100, 100)
+        self.rob.move_blocking(left_speed*50, right_speed*50, 100)
 
         # Update state based on action (simplified)
         self.state = self.get_state()
 
-        # Calculate reward
-        forward_movement = (left_speed + right_speed) / 2
-        collision_penalty = -np.max(self.state)  # Higher IR values indicate closer obstacles
-        # stop_penalty = -1 if forward_movement < 0.1 else 0  # Penalize if the robot is almost stopping
+        self.reward = self.state[1] - 1
 
-        self.reward = -1 + forward_movement + collision_penalty# + stop_penalty
-        
+        # done = self.state[1] == 1
+        # if done:
+        #     self.reward = 2
+
+        # IR = 0
+        # if self.state[0]> 0.1 and self.state[1] > 0.9:
+        #     IR = 0.5
+        # if self.state[0] > 0.9:
+        #     print[self.state[0]]
+        # # CV stuff
+        # self.reward = 1-self.state[1] + IR
+
+        # if self.state[1] == 1:
+        #     self.reward += self.state[3]
+
+        # IR values
+        ir_values = self.rob.read_irs()
+        ir_values = np.clip(ir_values, 0, 10000)
+        ir_values = ir_values / 10000.0
+
         # Check if done
-        done = np.any(self.state >= 0.6)
-        if done:
-            self.reward = -1
+        # done = np.any(ir_values >= 0.8)
+        # if done:
+        #     self.reward = -1
+        if self.steps > 50:
+            done = True
 
-        self.reward = np.clip(self.reward, -1, 1)
+        # self.reward = np.clip(self.reward, -1, 1)
 
         self.rewards.append(self.reward)
         rewards_series = pd.Series(self.rewards)
@@ -143,7 +259,7 @@ class RoboboEnv:
         
         if len(self.rewards) % 4 == 0:
             plt.figure(figsize=(12, 6))
-            # plt.plot(self.rewards, label='Reward at each step')
+            plt.plot(self.rewards, label='Reward at each step')
             plt.plot(rolling_avg, label=f'Rolling Average (window size {100})', color='red')
             plt.xlabel('Steps')
             plt.ylabel('Reward')
@@ -155,12 +271,23 @@ class RoboboEnv:
         return self.state, self.reward, done, {}
 
     def get_state(self):
+        # GCV values
+        image = self.rob.get_image_front()
+        if isinstance(self.rob, SimulationRobobo):
+            image = cv2.flip(image, 0)
+        cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
+        green_values = process_image(str(FIGRURES_DIR / "pic.png"), 'green')
+        red_values = process_image(str(FIGRURES_DIR / "pic.png"), 'red')
+
         # IR values
         ir_values = self.rob.read_irs()
         ir_values = np.clip(ir_values, 0, 10000)
         ir_values = ir_values / 10000.0
 
-        state_values = ir_values[[7,4,5,6]]
+        # state_values = ir_values[[7,4,5,6]]
+        # state_values = image_values
+        # state_values = np.concatenate((ir_values[[7,4,5,6]], green_values))
+        state_values = np.concatenate((ir_values[[4]], green_values, red_values))
         return np.array(state_values, dtype=np.float32)
 
 def run_all_actions(rob):
@@ -195,3 +322,8 @@ def run_all_actions(rob):
 
         if episode % 10 == 0:
             print(f"Episode {episode}, Total Reward: {total_reward}")
+
+
+# For Adam
+rob = SimulationRobobo()
+run_all_actions(rob)
