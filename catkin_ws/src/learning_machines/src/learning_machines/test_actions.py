@@ -3,7 +3,7 @@
 import numpy as np
 from robobo_interface import SimulationRobobo, IRobobo
 import pandas as pd
-from data_files import FIGRURES_DIR
+from data_files import FIGURES_DIR, RESULTS_DIR
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
@@ -11,7 +11,9 @@ import torch.optim as optim
 from torch.distributions import Normal
 import cv2
 
-def process_image(rob, image_path, colour='green'):
+# This is actions 1st
+
+def process_image(image_path, colour='green'):
     # Load the image
     image = cv2.imread(image_path)
 
@@ -97,7 +99,7 @@ class PPOAgent:
         self.action_size = action_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = ActorCritic(state_size, action_size).to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=3e-4)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=1e-3)
         self.clip_param = 0.2
         self.ppo_epochs = 10
         self.batch_size = 32
@@ -167,7 +169,7 @@ class RoboboEnv:
         if isinstance(self.rob, SimulationRobobo):
             self.rob.stop_simulation()
             self.rob.play_simulation()
-        self.rob.set_phone_tilt_blocking(100, 100)
+        self.rob.set_phone_tilt_blocking(90, 100)
         self.reward = 0
         self.steps = 0
         self.food_consumed = 0
@@ -200,20 +202,20 @@ class RoboboEnv:
             plt.ylabel('Reward')
             plt.legend()
             plt.title('Reward over Time')
-            plt.savefig(FIGRURES_DIR / f'training_rewards.png')
+            plt.savefig(FIGURES_DIR / f'training_rewards.png')
             plt.close()
         
         return self.state, self.reward, self.done, {}
 
     def get_state(self):
-        # GCV values
-        i = self.rob.get_image_front()
+        # CV values
+        i = self.rob.read_image_front()
         image = cv2.flip(i, -1)
         # if isinstance(self.rob, SimulationRobobo):
         #     image = cv2.flip(image, 0)
-        cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
-        green_values = process_image(self.rob, str(FIGRURES_DIR / "pic.png"), 'green')
-        red_values = process_image(self.rob, str(FIGRURES_DIR / "pic.png"), 'red')
+        cv2.imwrite(str(FIGURES_DIR / "pic.png"), image)
+        green_values = process_image(str(FIGURES_DIR / "pic.png"), 'green')
+        red_values = process_image(str(FIGURES_DIR / "pic.png"), 'red')
 
         return np.array(red_values, dtype=np.float32)
     
@@ -221,7 +223,7 @@ class RoboboEnv:
         weights = [0.5,1,0.5] 
         
         reward = sum(w * p for w, p in zip(weights, self.state))
-        return reward - 1
+        return reward
 
 def run_all_actions(rob):
     env = RoboboEnv(rob)

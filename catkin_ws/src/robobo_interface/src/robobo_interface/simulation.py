@@ -32,26 +32,29 @@ class SimulationRobobo(IRobobo):
 
     A few functions take blockid. When they do, they are not blocking. If you call
     these while the action is still blocked with a new blockid
-    stuff might go seriously wrong, and the robot might halt indefinetly.
+    stuff might go seriously wrong, and the robot might halt indefinitely.
 
-    Since the behavior of non-blocking functions is different from Simulation to Hardware,
+    Since the behaviour of non-blocking functions is different from Simulation to Hardware,
     it is recommended to only use the `_blocking` functions of the robot,
     which are inherited from the IRobobo in the format of a template method.
 
     However, if you want the robot to move the tilt motor while also driving and such,
     you can still experiment with them.
 
+    Some functions start with `read_` others with `get_`
+    Information retrieved from `read_` is available in hardware, that from `get_` not.
+
     Arguments you should understand:
     identifier: int = 0 -> The value number to use. If you have one robobo in the scene,
-            or want to use the first one, this is 0. Else, increase the value
+    or want to use the first one, this is 0. Else, increase the value
 
     Arguments you only have to understand if you want to do advanced stuff:
     api_port: Optional[int] = None -> The port at which to look for the CoppeliaSim API.
-        If None, it will try to see if COPPELIA_SIM_PORT is set, and use that.
-        If that envoirement variable is not set, it will default to 19999
-    ip_adress: Optional[str] = None -> The TCP adress at which to look for the CoppeliaSim API.
-        If None, it will try to see if COPPELIA_SIM_IP is set, and use that.
-        If that envoirement variable is not set, it will default to "0.0.0.0"
+    If None, it will try to see if COPPELIA_SIM_PORT is set, and use that.
+    If that environment variable is not set, it will default to 23000
+    ip_adress: Optional[str] = None -> The TCP address at which to look for the CoppeliaSim API.
+    If None, it will try to see if COPPELIA_SIM_IP is set, and use that.
+    If that environment variable is not set, it will default to "0.0.0.0"
     logger: Callable[[str], None] = print -> The function to use for logging / printing.
     timeout_dur: int -> The amount of time to wait for API calls before erroring out.
     """
@@ -114,6 +117,7 @@ class SimulationRobobo(IRobobo):
         blockid: Optional[int] = None,
     ) -> int:
         """Move the robot wheels for `millis` time
+        This function is asynchronous. You likely want `move_blocking` instead.
 
         Arguments
         left_speed: speed of the left wheel. Range: -100-0-100. 0 is no movement, negative backward.
@@ -145,7 +149,7 @@ class SimulationRobobo(IRobobo):
 
     def reset_wheels(self) -> None:
         """Allows to reset the wheel encoder positions to 0.
-        After calling this topic both encoders (topic /robot/wheels) will start again
+        After calling this both encoders reset, making the current position the new reference
         in position 0.
         """
         if not self.is_running():
@@ -209,7 +213,7 @@ class SimulationRobobo(IRobobo):
         )
         return list(ints)
 
-    def get_image_front(self) -> NDArray[numpy.uint8]:
+    def read_image_front(self) -> NDArray[numpy.uint8]:
         """Get the image from the front camera as a numpy array in cv2 format.
 
         You can, for example, write this image to file with:
@@ -228,7 +232,7 @@ class SimulationRobobo(IRobobo):
         self, pan_position: int, pan_speed: int, blockid: Optional[int] = None
     ) -> int:
         """Command the robot to move the smartphone holder in the horizontal (pan) axis.
-        This function is asyncronous.
+        This function is asynchronous. You likely want `set_phone_pan_blocking` instead.
 
         Arguments
         pan_position: Angle to position the pan at. Range: 11-343.
@@ -273,7 +277,7 @@ class SimulationRobobo(IRobobo):
         self, tilt_position: int, tilt_speed: int, blockid: Optional[int] = None
     ) -> int:
         """Command the robot to move the smartphone holder in the vertical (tilt) axis.
-        This function is asyncronous.
+        This function is asynchronous. You likely want `set_phone_tilt_blocking` instead.
 
         Arguments
         tilt_position: Angle to position the tilt at. Range: 26-109.
@@ -418,7 +422,7 @@ class SimulationRobobo(IRobobo):
         """
         return self._sim.getSimulationTime()
 
-    def nr_food_collected(self) -> int:
+    def get_nr_food_collected(self) -> int:
         """Return the amount of food currently collected.
 
         This only works in the simulation
@@ -447,21 +451,19 @@ class SimulationRobobo(IRobobo):
 
         This only works in the simulation.
         """
-        orient = self._sim.getOBjectOrientation(self._robobo, self._sim.handle_world)
+        orient = self._sim.getObjectOrientation(self._robobo, self._sim.handle_world)
         return Orientation(*orient)
 
     def set_position(self, position: Position, orientation: Orientation) -> None:
-        """Set the position of the Robobo in the simulation"""
-        self._sim.setObjectPosition(
-            self._robobo, [position.x, position.y, position.z], self._sim.handle_world
-        )
+        """Set the position of the Robobo in the simulation
+        More information at: https://manual.coppeliarobotics.com/en/positionOrientationTransformation.htm
+        """
+        self._sim.setObjectPosition(self._robobo, [position.x, position.y, position.z])
         self._sim.setObjectOrientation(
-            self._robobo,
-            [orientation.yaw, orientation.pitch, orientation.roll],
-            self._sim.handle_world,
+            self._robobo, [orientation.yaw, orientation.pitch, orientation.roll]
         )
 
-    def base_position(self) -> Position:
+    def get_base_position(self) -> Position:
         """Get the position of the base to deliver food at.
 
         This only works in the simulation.
@@ -516,24 +518,24 @@ class SimulationRobobo(IRobobo):
     def _initialise_handles(self) -> None:
         # fmt: off
         self._robobo = self._get_object(f"/Robobo{self._identifier}")
-        self._wheels_script = self._get_childscript(self._get_object(f"/Robobo{self._identifier}/Left_Motor"))
-        self._leds_script = self._get_childscript(self._get_object(f"/Robobo{self._identifier}/Back_L"))
-        self._ir_script = self._get_childscript(self._get_object(f"/Robobo{self._identifier}/IR_Back_C"))
-        self._pan_motor_script = self._get_childscript(self._get_object(f"/Robobo{self._identifier}/Pan_Motor"))
-        self._tilt_motor_script = self._get_childscript(self._get_object(f"/Robobo{self._identifier}/Pan_Motor/Pan_Respondable/Tilt_Motor"))
-        self._smartphone_script = self._get_childscript(self._get_object(f"/Robobo{self._identifier}/Pan_Motor/Pan_Respondable/Tilt_Motor/Smartphone_Respondable"))
+        self._wheels_script = self._get_childscript(f"/Robobo{self._identifier}/Left_Motor")
+        self._leds_script = self._get_childscript(f"/Robobo{self._identifier}/Back_L")
+        self._ir_script = self._get_childscript(f"/Robobo{self._identifier}/IR_Back_C")
+        self._pan_motor_script = self._get_childscript(f"/Robobo{self._identifier}/Pan_Motor")
+        self._tilt_motor_script = self._get_childscript(f"/Robobo{self._identifier}/Pan_Motor/Pan_Respondable/Tilt_Motor")
+        self._smartphone_script = self._get_childscript(f"/Robobo{self._identifier}/Pan_Motor/Pan_Respondable/Tilt_Motor/Smartphone_Respondable")
         self._smartphone_camera = self._get_object(f"/Robobo{self._identifier}/Pan_Motor/Pan_Respondable/Tilt_Motor/Smartphone_Respondable/Smartphone_camera")
         # fmt: on
 
         try:
             self._base = self._get_object("/Base")
-            self._base_script = self._get_childscript(self._base)
+            self._base_script = self._get_childscript("/Base")
         except AttributeError:
             self._base = None
             self._base_script = None
 
         try:
-            self._food_script = self._get_childscript(self._get_object("/Food"))
+            self._food_script = self._get_childscript("/Food")
         except AttributeError:
             self._food_script = None
 
@@ -542,25 +544,27 @@ class SimulationRobobo(IRobobo):
         try:
             ret = self._sim.getObject(name)
         except:
-            raise AttributeError(f"Could not find {str} in scene")
+            raise AttributeError(f"Could not find {name} in scene")
         if ret < 0:
-            raise AttributeError(f"Could not find {str} in scene")
+            raise AttributeError(f"Could not find {name} in scene")
         return ret
 
-    def _get_childscript(self, obj_handle: int) -> int:
+    def _get_childscript(self, name: str) -> int:
+        # Call get_object in here, mostly to get better error messages.
+        obj_handle = self._get_object(name)
         try:
             ret = self._sim.getScript(self._sim.scripttype_childscript, obj_handle)
         except:
-            raise AttributeError(f"Could not find Script of {str} in scene")
+            raise AttributeError(f"Could not find Script of {name} in scene")
         if ret < 0:
-            raise AttributeError(f"Could not find Script of {str} in scene")
+            raise AttributeError(f"Could not find Script of {name} in scene")
         return ret
 
     def _fail_connect(self, api_port: int, ip_adress: str) -> NoReturn:
         self._logger(
             """CoppeliaSim Api Connection Error
             Failed connecting to remote API server
-            Is the simulation running / playing?
+            Is CoppeliaSim turned on (with the ZMQ remote API available)?
 
             If not on Linux with --net=host:
             Did you specify the IP adress of your computer in scripts/setup.bash?
@@ -573,16 +577,19 @@ class SimulationRobobo(IRobobo):
 
 # This only works on Unix. Luckily, we are in Docker.
 def timeout(func: Callable[[], T], timeout_duration: int = 10) -> T:
-    def handler(_signum, _frame):
+    def timeouterror_handler(_signum, _frame):
         raise TimeoutError()
 
+    original_handler = signal.getsignal(signal.SIGALRM)
+
     # set the timeout handler
-    signal.signal(signal.SIGALRM, handler)
+    signal.signal(signal.SIGALRM, timeouterror_handler)
     signal.alarm(timeout_duration)
     try:
         return func()
     finally:
         signal.alarm(0)
+        signal.signal(signal.SIGALRM, original_handler)
 
 
 # The API code catches too much, making it hard to quit when failing.
