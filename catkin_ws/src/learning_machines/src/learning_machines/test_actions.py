@@ -225,14 +225,18 @@ class RoboboEnv:
         reward = sum(w * p for w, p in zip(weights, self.state))
         return reward
 
-def run_all_actions(rob):
+
+def train(rob):
     env = RoboboEnv(rob)
     state_size = env.observation_space
-    print("fl ", state_size)
+    print("l ", state_size)
     action_size = env.action_space
     agent = PPOAgent(state_size, action_size)
     
     episodes = 1000
+
+    best_model_path = RESULTS_DIR / 'best_model.pth'
+    best = -np.inf
     for episode in range(episodes):
         state = env.reset()
         done = False
@@ -256,9 +260,43 @@ def run_all_actions(rob):
                 agent.update(states, actions, rewards, next_states, dones)
                 states, actions, rewards, next_states, dones = [], [], [], [], []
 
+        if total_reward > best:
+            best = total_reward
+            torch.save(agent, best_model_path)
+            print(f"New best model saved with accuracy: {best}")
+
         if episode % 10 == 0:
             print(f"Episode {episode}, Total Reward: {total_reward}")
 
+def test(rob):
+    env = RoboboEnv(rob)
+    state_size = env.observation_space
+    action_size = env.action_space
+    
+    # Create an instance of the agent
+    agent = PPOAgent(state_size, action_size)
+    
+    # Load the saved model
+    best_model_path = RESULTS_DIR / 'best_model.pth'
+    agent = torch.load(best_model_path)
+    agent.eval()  # Set the model to evaluation mode
+    
+    # Run a test episode
+    state = env.reset()
+    done = False
+    total_reward = 0
+    
+    while not done:
+        action = agent.act(state)
+        next_state, reward, done, _ = env.step(action)
+        
+        state = next_state
+        total_reward += reward
+        
+    print(f"Test episode completed. Total Reward: {total_reward}")
+
+def run_all_actions(rob):
+    train(rob)
 
 # For Adam
 # rob = SimulationRobobo()
