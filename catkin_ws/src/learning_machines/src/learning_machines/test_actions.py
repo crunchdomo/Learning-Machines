@@ -1,18 +1,157 @@
 #!/usr/bin/env python3
 
-import numpy as np
-from robobo_interface import SimulationRobobo, IRobobo
-import pandas as pd
-from data_files import FIGRURES_DIR
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from collections import deque
-from torch.distributions import Normal
+import torch.nn.functional as F
+from collections import deque, namedtuple
+import random
+import numpy as np
+import os
+from itertools import count
+import math
 import cv2
+import datetime
 
-def process_image(image_path, colour='green'):
+from typing import Literal
+
+from data_files import FIGRURES_DIR
+
+from robobo_interface import (
+        IRobobo,
+        SimulationRobobo
+)
+
+# Helper fns
+def get_state(rob: IRobobo, clamp = 250) -> torch.Tensor:
+    # GCV values
+    image = rob.get_image_front()
+    if isinstance(rob, SimulationRobobo):
+        image = cv2.flip(image, 0)
+    cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
+    green_values = process_image(str(FIGRURES_DIR / "pic.png"), 'green', rob)
+    red_values = process_image(str(FIGRURES_DIR / "pic.png"), 'red', rob)
+
+    # IR values
+    # ir_values = rob.read_irs()
+    # ir_values = np.clip(ir_values, 0, 10000)
+    # ir_values = ir_values / 10000.0
+    ir_values = [list(map(lambda ir: ir if ir < clamp else clamp, rob.read_irs()))]
+
+    # Select only IR values 7, 4, 5, 6
+    selected_ir_values = [ir_values[0][i] for i in [7, 4, 5, 6]]
+
+    # Combine all values
+    combined_values = selected_ir_values + list(green_values) + list(red_values)
+
+    # Convert to torch tensor
+    return torch.tensor([combined_values], device=device, dtype=torch.float)
+    # return torch.tensor([list(map(lambda ir: ir if ir < clamp else clamp, rob.read_irs()))], device=device, dtype=torch.float)
+
+def get_device_type() -> Literal['cuda', 'mps', 'cpu']: 
+    if torch.cuda.is_available():
+        return 'cuda'
+    elif torch.backends.mps.is_available():
+        return 'mps'
+    else:
+        return 'cpu'
+
+device = torch.device(get_device_type())
+
+Transition = namedtuple('Transition', ('state', 'speeds', 'next_state', 'reward'))
+
+class ReplayMemory(object):
+    def __init__(self, capacity):
+        self.memory = deque([], maxlen=capacity)
+
+    def push(self, *args):
+        """Save a transition"""
+        self.memory.append(Transition(*args))
+
+    def sample(self, batch_size):
+        return random.sample(self.memory, batch_size)
+
+    def __len__(self):
+        return len(self.memory)
+
+class WheelDQN(nn.Module):
+    def __init__(self, n_observations):
+        super(WheelDQN, self).__init__()
+        self.layer1 = nn.Linear(n_observations, 128)
+        self.layer2 = nn.Linear(128, 128)
+        self.layer3 = nn.Linear(128, 2)
+
+    # Called with either one element to determine next action, or a batch
+    # during optimization. Returns tensor([[left0exp,right0exp]...]).
+    def forward(self, x):
+        x = F.relu(self.layer1(x))
+        x = F.relu(self.layer2(x))
+        return self.layer3(x)
+
+class RobotNNController:
+    def __init__(self, n_observations, batch_size = 128, gamma = 0.99, lr=1e-4, memory_capacity=10000):
+        self.steps_done = 0
+        self.state_size = n_observations
+        
+        self.batch_size = batch_size
+        self.gamma = gamma
+        self.lr = lr
+
+        self.policy_net = WheelDQN(n_observations).to(device)
+        self.target_net = WheelDQN(n_observations).to(device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+
+        self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=lr, amsgrad=True)
+        self.memory = ReplayMemory(memory_capacity)
+
+        self.target_net.eval()
+        
+        self.epsilon_start = 0.9
+        self.epsilon_end = 0.05
+        self.epsilon_decay = 1000 
+
+
+    def select_action(self, state: torch.Tensor) -> torch.Tensor:
+        sample = random.random()
+        self.epsilon_threshold = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * math.exp(-1. * self.steps_done / self.epsilon_decay)
+        self.steps_done += 1
+        if sample > self.epsilon_threshold:
+            with torch.no_grad():
+                return self.policy_net(state)
+        else:
+            return torch.tensor([[random.uniform(-50, 100), random.uniform(-50, 100)]], device=device, dtype=torch.float64)
+
+    def update_target(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    def push(self, state, speeds, next_state, reward):
+        self.memory.push(state, speeds, next_state, reward)
+
+    def optimize_model(self):
+        if len(self.memory) < self.batch_size:
+            return
+        transitions = self.memory.sample(self.batch_size)
+
+        batch = Transition(*zip(*transitions))
+
+        state_batch = torch.cat(batch.state)
+        reward_batch = torch.cat(batch.reward)
+        next_state_batch = torch.cat(batch.next_state)
+        
+        state_speed_values = self.policy_net(state_batch)
+
+        next_state_values = self.target_net(next_state_batch).max(1)[0].detach()
+
+        expected_state_action_values = (next_state_values * self.gamma) + reward_batch
+
+        criterion = nn.SmoothL1Loss()
+        loss = criterion(state_speed_values, expected_state_action_values.unsqueeze(1))
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+def process_image(image_path, colour='green', rob=SimulationRobobo()):
     """
     Parameters
     ----------
@@ -47,19 +186,27 @@ def process_image(image_path, colour='green'):
         mask = cv2.inRange(hsv, lower_green, upper_green)
 
     if colour == 'red':
-        # Define range for red color and create a mask
-        # Red wraps around the HSV color space, so we need two ranges
-        lower_red1 = np.array([0, 100, 100])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([160, 100, 100])
-        upper_red2 = np.array([180, 255, 255])
-        
-        # Create masks for both ranges
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        
-        # Combine the masks
-        mask = cv2.bitwise_or(mask1, mask2)
+        if isinstance(rob, SimulationRobobo):
+            # Define range for blue color and create a mask
+            lower_blue = np.array([110, 50, 50])
+            upper_blue = np.array([130, 255, 255])
+            
+            # Create mask for blue color
+            mask = cv2.inRange(hsv, lower_blue, upper_blue)
+        else:
+            # Define range for red color and create a mask
+            # Red wraps around the HSV color space, so we need two ranges
+            lower_red1 = np.array([0, 100, 100])
+            upper_red1 = np.array([10, 255, 255])
+            lower_red2 = np.array([160, 100, 100])
+            upper_red2 = np.array([180, 255, 255])
+            
+            # Create masks for both ranges
+            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+            
+            # Combine the masks
+            mask = cv2.bitwise_or(mask1, mask2)
 
     # Display the mask for debugging
     # cv2.imshow('Mask', mask)
@@ -106,222 +253,193 @@ def process_image(image_path, colour='green'):
     else:
         return 0, 0
 
-class ActorCritic(nn.Module):
-    def __init__(self, state_size, action_size):
-        super(ActorCritic, self).__init__()
-        self.actor = nn.Sequential(
-            nn.Linear(state_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, action_size),
-            nn.Sigmoid()
-        )
-        self.critic = nn.Sequential(
-            nn.Linear(state_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1)
-        )
-        self.log_std = nn.Parameter(torch.zeros(action_size))
+def get_reward(rob_after_movement, starting_pos, left_speed, right_speed, state, next_state, image_before_movement, image_after_movement, move_time):
 
-    def forward(self, state):
-        value = self.critic(state)
-        mu = self.actor(state)
-        std = self.log_std.exp()
-        dist = Normal(mu, std)
-        return dist, value
+    global food_consumed
 
-class PPOAgent:
-    def __init__(self, state_size, action_size):
-        self.state_size = state_size
-        self.action_size = action_size
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = ActorCritic(state_size, action_size).to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=3e-4)
-        self.clip_param = 0.2
-        self.ppo_epochs = 10
-        self.batch_size = 32
+    irs_after_movement = get_state(rob_after_movement)
+    # print(irs_after_movement)
+    current_pos = rob_after_movement.get_position()
+    wheels = rob_after_movement.read_wheels()
 
-    def act(self, state):
-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        dist, _ = self.model(state)
-        action = dist.sample()
-        return action.cpu().numpy()[0]
+    left = wheels.wheel_pos_l
+    right = wheels.wheel_pos_r
 
-    def update(self, states, actions, rewards, next_states, dones):
-        # Convert lists of numpy arrays to single numpy arrays
-        states = np.array(states)
-        actions = np.array(actions)
-        rewards = np.array(rewards)
-        next_states = np.array(next_states)
-        dones = np.array(dones)
+    distance = np.linalg.norm(np.array([current_pos.x, current_pos.y]) - np.array([starting_pos.x, starting_pos.y]))
+
+    reward = 0
+
+    if food_consumed < rob_after_movement.nr_food_collected():
+        reward += 0.2 * (rob_after_movement.nr_food_collected() - food_consumed) * (0 if left_speed < 0 and right_speed < 0 else 1)
+        food_consumed = rob_after_movement.nr_food_collected()
+            
+    return torch.tensor([reward], device=device)
+
+def run_training(rob: SimulationRobobo, controller: RobotNNController, num_episodes = 30, load_previous=False, moves=20):
+    highest_reward = -float('inf')
+    model_path = FIGRURES_DIR 
+
+    total_left, total_right = 0.0, 0.0
+
+    global rewards
+    global sensor_readings
+    sensor_readings = np.array([])
+    rewards = np.array([])
+
+    if load_previous and os.path.exists(model_path):
+        controller.policy_net.load_state_dict(torch.load(model_path))
+        controller.target_net.load_state_dict(controller.policy_net.state_dict())
+        print("Loaded saved model.")
+
+    for episode in range(num_episodes):
+        # iterations_since_last_collision = 1
+
+        print(f'Started Episode: {episode}')
         
-        # Convert numpy arrays to torch tensors
-        states = torch.FloatTensor(states).to(self.device)
-        actions = torch.FloatTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device)
-        next_states = torch.FloatTensor(next_states).to(self.device)
-        dones = torch.FloatTensor(dones).to(self.device)
+        # Start the simulation
+        rob.play_simulation()
+        rob.set_phone_tilt_blocking(100, 100)
+        rob.sleep(0.5)
 
-        # Compute advantages
-        with torch.no_grad():
-            _, next_values = self.model(next_states)
-            advantages = rewards + (1 - dones) * 0.99 * next_values.squeeze() - self.model(states)[1].squeeze()
+        state = get_state(rob)
+        camera_state = state[4:]
+        starting_pos = rob.get_position()
+        total_reward = 0
 
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        global food_consumed
+        food_consumed = 0
 
-        for _ in range(self.ppo_epochs):
-            # Compute actor and critic losses
-            dist, values = self.model(states)
-            log_probs = dist.log_prob(actions).sum(1)
-            entropy = dist.entropy().mean()
+        for t in count():
+            # state here is what we see before moving
+            new_readings = rob.read_irs()
+            sensor_readings = np.append(sensor_readings, new_readings)
+            speeds = controller.select_action(state)
+            left_speed, right_speed = speeds[0, 0].item(), speeds[0, 1].item() # choose a movement
+            move_time = 100
+            rob.reset_wheels()
+            rob.move_blocking(int(left_speed), int(right_speed), move_time) # execute movement
+            next_state = get_state(rob) # what we see after moving
+            next_camera_state = next_state[4:]
+            wheels = rob.read_wheels()
 
-            ratio = torch.exp(log_probs - log_probs.detach())
-            surr1 = ratio * advantages
-            surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantages
-            actor_loss = -torch.min(surr1, surr2).mean()
+            total_left += wheels.wheel_pos_l
+            total_right += wheels.wheel_pos_r
+            
+            # reward gets rob (after moving), left_speed and right_speed (of the last movement),
+            reward = get_reward(rob, starting_pos, left_speed, right_speed, state, next_state, camera_state, next_camera_state, move_time)
+            total_reward += reward.item()
 
-            critic_loss = nn.MSELoss()(values.squeeze(), rewards + 0.99 * next_values.squeeze() * (1 - dones))
+            controller.push(state, speeds, next_state, reward)
+            state = next_state
+            camera_state = next_camera_state
 
-            loss = actor_loss + 0.5 * critic_loss - 0.01 * entropy
+            controller.optimize_model()
 
-            # Update model
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            if t > moves + (episode // 5) * 5 :
+                rob.stop_simulation()
+                break
+        rewards = np.append(rewards, total_reward)
+        controller.update_target()
+        print(f"Episode: {episode}, Total Reward: {total_reward}")
+        generate_plots()
+        if total_reward > highest_reward:
+            highest_reward = total_reward
+            torch.save(controller.policy_net.state_dict(), model_path / f"goodest.test")
+            print(f"Saved best model with highest reward: {highest_reward}")
 
-class RoboboEnv:
-    def __init__(self, rob: IRobobo):
-        self.rob = rob
-        self.action_space = 2
-        self.observation_space = 5
-        self.reset()
-        self.rewards = []
-        self.reward = 0
-        self.steps = 0
+def clamp(n, smallest, largest): 
+    if n < 0:
+        return max(n, smallest)
+    return min(n, largest)
+
+def run_model(rob: IRobobo, controller: RobotNNController):
+    # load the model
+    model_path = FIGRURES_DIR  / 'top_hardware.model'
+    controller.policy_net.load_state_dict(torch.load(model_path))
+    controller.target_net.load_state_dict(controller.policy_net.state_dict())
+    controller.policy_net.eval()
+
+    # Start the simulation
+    if isinstance(rob, SimulationRobobo):
+        rob.play_simulation()
+
+    state = get_state(rob)
+    
+    collisions = 0
+    still_colliding = False
+
+    while True:
+        speeds = controller.select_action(state)
+        left_speed, right_speed = speeds[0, 0].item(), speeds[0, 1].item()
+        print(f"Speeds: {left_speed}, {right_speed}")
+        if isinstance(rob, SimulationRobobo):
+            move_time = 100
+        else:
+            move_time = 500
+        rob.reset_wheels()
         
-    def reset(self):
-        if isinstance(self.rob, SimulationRobobo):
-            self.rob.stop_simulation()
-            self.rob.play_simulation()
-        self.rob.set_phone_tilt_blocking(120, 100)
-        self.reward = 0
-        self.steps = 0
-        return self.get_state()
+        rob.move_blocking(clamp(int(left_speed), -100, 100), clamp(int(right_speed), -100, 100), move_time)
+        next_state = get_state(rob)
+        state = next_state
 
-    def step(self, action):
-        self.steps += 1
-        # Simulate movement and update state
-        left_speed, right_speed = action
+        if rob.read_irs()[0] > 250 and not still_colliding:
+            collisions += 1
+            still_colliding = True
+            print(f"Collisions: {collisions}")
+        elif rob.read_irs()[0] < 250:
+            still_colliding = False
 
-        self.rob.move_blocking(left_speed*50, right_speed*50, 100)
+        # Exit on collision
+        # if collisions > 9:
+        #     break
 
-        # Update state based on action (simplified)
-        self.state = self.get_state()
+    if isinstance(rob, SimulationRobobo):
+        rob.stop_simulation()
 
-        self.reward = self.state[1] - 1
+controller = RobotNNController(n_observations=8, memory_capacity=10000, batch_size=64, gamma=0.99, lr=1e-3)
 
-        # done = self.state[1] == 1
-        # if done:
-        #     self.reward = 2
+def generate_plots():
+    global sensor_readings
+    global rewards
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import seaborn as sns
 
-        # IR = 0
-        # if self.state[0]> 0.1 and self.state[1] > 0.9:
-        #     IR = 0.5
-        # if self.state[0] > 0.9:
-        #     print[self.state[0]]
-        # # CV stuff
-        # self.reward = 1-self.state[1] + IR
+    sns.set_theme()
+    sns.set_style("whitegrid")
+    sns.set_context("notebook", font_scale=1.5, rc={"lines.linewidth": 2.5})
 
-        # if self.state[1] == 1:
-        #     self.reward += self.state[3]
+    fig, ax = plt.subplots(figsize=(12, 8))
+    for i in range(8):
+        ax.plot(sensor_readings[i], label=f"IR {i+1}")
 
-        # IR values
-        ir_values = self.rob.read_irs()
-        ir_values = np.clip(ir_values, 0, 10000)
-        ir_values = ir_values / 10000.0
+    ax.legend()
+    ax.set_xlabel("Time")
+    ax.set_ylabel("IR Sensor Value")
+    ax.set_title("IR Sensor Readings Over Time")
+    
+    # save the figure to the figures directory
+    plt.savefig(FIGRURES_DIR / 'sensor_readings_training.png')
 
-        # Check if done
-        # done = np.any(ir_values >= 0.8)
-        # if done:
-        #     self.reward = -1
-        if self.steps > 50:
-            done = True
+    # Plot the rewards
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.plot(rewards)
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Reward")
+    ax.set_title("Rewards Over Time")
+    plt.savefig(FIGRURES_DIR / 'rewards_training.png')
 
-        # self.reward = np.clip(self.reward, -1, 1)
-
-        self.rewards.append(self.reward)
-        rewards_series = pd.Series(self.rewards)
-        rolling_avg = rewards_series.rolling(window=100).mean()
-        
-        if len(self.rewards) % 4 == 0:
-            plt.figure(figsize=(12, 6))
-            plt.plot(self.rewards, label='Reward at each step')
-            plt.plot(rolling_avg, label=f'Rolling Average (window size {100})', color='red')
-            plt.xlabel('Steps')
-            plt.ylabel('Reward')
-            plt.legend()
-            plt.title('Reward over Time')
-            plt.savefig(FIGRURES_DIR / f'training_rewards.png')
-            plt.close()
-        
-        return self.state, self.reward, done, {}
-
-    def get_state(self):
-        # GCV values
-        image = self.rob.get_image_front()
-        if isinstance(self.rob, SimulationRobobo):
-            image = cv2.flip(image, 0)
-        cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
-        green_values = process_image(str(FIGRURES_DIR / "pic.png"), 'green')
-        red_values = process_image(str(FIGRURES_DIR / "pic.png"), 'red')
-
-        # IR values
-        ir_values = self.rob.read_irs()
-        ir_values = np.clip(ir_values, 0, 10000)
-        ir_values = ir_values / 10000.0
-
-        # state_values = ir_values[[7,4,5,6]]
-        # state_values = image_values
-        # state_values = np.concatenate((ir_values[[7,4,5,6]], green_values))
-        state_values = np.concatenate((ir_values[[4]], green_values, red_values))
-        return np.array(state_values, dtype=np.float32)
+    plt.close()
 
 def run_all_actions(rob):
-    env = RoboboEnv(rob)
-    state_size = env.observation_space
-    action_size = env.action_space
-    agent = PPOAgent(state_size, action_size)
-    
-    episodes = 1000
-    for episode in range(episodes):
-        state = env.reset()
-        done = False
-        total_reward = 0
-        states, actions, rewards, next_states, dones = [], [], [], [], []
+    run_training(rob, controller, num_episodes=30, load_previous=False, moves=40)
+    generate_plots()
 
-        while not done:
-            action = agent.act(state)
-            next_state, reward, done, _ = env.step(action)
-            
-            states.append(state)
-            actions.append(action)
-            rewards.append(reward)
-            next_states.append(next_state)
-            dones.append(done)
+def run_task1_actions(rob):
+    run_model(rob, controller)
 
-            state = next_state
-            total_reward += reward
-
-            if len(states) >= agent.batch_size:
-                agent.update(states, actions, rewards, next_states, dones)
-                states, actions, rewards, next_states, dones = [], [], [], [], []
-
-        if episode % 10 == 0:
-            print(f"Episode {episode}, Total Reward: {total_reward}")
+def run_task0_actions(rob):
+    print('Task 0 actions')
 
 
 # For Adam
