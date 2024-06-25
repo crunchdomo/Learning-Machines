@@ -164,6 +164,7 @@ class RoboboEnv:
         self.steps = 0
         self.food_consumed = 0
         self.done = False
+        self.target_colour = 'red'
         
     def reset(self):
         if isinstance(self.rob, SimulationRobobo):
@@ -174,11 +175,11 @@ class RoboboEnv:
         self.steps = 0
         self.food_consumed = 0
         self.done = False
+        self.target_colour = 'red'
         return self.get_state()
 
-    def step(self, action):
+    def step(self, action, train=False):
         self.steps += 1
-        # Simulate movement and update state
         left_speed, right_speed = action
 
         self.rob.move_blocking(left_speed*50, right_speed*50, 100)
@@ -194,7 +195,7 @@ class RoboboEnv:
         rewards_series = pd.Series(self.rewards)
         rolling_avg = rewards_series.rolling(window=100).mean()
         
-        if len(self.rewards) % 4 == 0:
+        if len(self.rewards) % 4 == 0 and train:
             plt.figure(figsize=(12, 6))
             plt.plot(self.rewards, label='Reward at each step')
             plt.plot(rolling_avg, label=f'Rolling Average (window size {100})', color='red')
@@ -214,28 +215,35 @@ class RoboboEnv:
         # if isinstance(self.rob, SimulationRobobo):
         #     image = cv2.flip(image, 0)
         cv2.imwrite(str(FIGURES_DIR / "pic.png"), image)
-        green_values = process_image(str(FIGURES_DIR / "pic.png"), 'green')
-        red_values = process_image(str(FIGURES_DIR / "pic.png"), 'red')
+        picture_data = process_image(str(FIGURES_DIR / "pic.png"), self.target_colour)
 
-        return np.array(red_values, dtype=np.float32)
+        return np.array(picture_data, dtype=np.float32)
     
     def get_reward(self):
         weights = [0.5,1,0.5] 
         
         reward = sum(w * p for w, p in zip(weights, self.state))
+
+        # if self.rob.remote_get_food_collected() == 1:
+        #     self.target_colour = 'green'
+        #     print("looking for Greeeeen!!!")
+
         return reward
 
+
+best_model_path = RESULTS_DIR / 'best_model.pth'
 
 def train(rob):
     env = RoboboEnv(rob)
     state_size = env.observation_space
-    print("l ", state_size)
+    print("awunga")
     action_size = env.action_space
     agent = PPOAgent(state_size, action_size)
+    agent = torch.load(best_model_path)
+
     
     episodes = 1000
 
-    best_model_path = RESULTS_DIR / 'best_model.pth'
     best = -np.inf
     for episode in range(episodes):
         state = env.reset()
@@ -245,7 +253,7 @@ def train(rob):
 
         while not done:
             action = agent.act(state)
-            next_state, reward, done, _ = env.step(action)
+            next_state, reward, done, _ = env.step(action, train=True)
             
             states.append(state)
             actions.append(action)
@@ -263,7 +271,7 @@ def train(rob):
         if total_reward > best:
             best = total_reward
             torch.save(agent, best_model_path)
-            print(f"New best model saved with accuracy: {best}")
+            print(f"New best model saved: {best}")
 
         if episode % 10 == 0:
             print(f"Episode {episode}, Total Reward: {total_reward}")
@@ -277,9 +285,8 @@ def test(rob):
     agent = PPOAgent(state_size, action_size)
     
     # Load the saved model
-    best_model_path = RESULTS_DIR / 'best_model.pth'
     agent = torch.load(best_model_path)
-    agent.eval()  # Set the model to evaluation mode
+    # agent.eval()  # Set the model to evaluation mode
     
     # Run a test episode
     state = env.reset()
