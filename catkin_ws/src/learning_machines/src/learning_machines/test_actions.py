@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from collections import deque
 from torch.distributions import Normal
 import cv2
 
@@ -34,47 +33,36 @@ def process_image(rob, image_path, colour='green'):
         mask = cv2.inRange(hsv, lower_green, upper_green)
 
     if colour == 'red':
-        if isinstance(rob, SimulationRobobo):
-            # Define range for blue color and create a mask
-            lower_blue = np.array([110, 50, 50])
-            upper_blue = np.array([130, 255, 255])
+        # Define range for red color and create a mask
+        # Red wraps around the HSV color space, so we need two ranges
+        lower_red1 = np.array([0, 100, 100])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([160, 100, 100])
+        upper_red2 = np.array([180, 255, 255])
             
-            # Create mask for blue color
-            mask = cv2.inRange(hsv, lower_blue, upper_blue)
-        else:
-            # Define range for red color and create a mask
-            # Red wraps around the HSV color space, so we need two ranges
-            lower_red1 = np.array([0, 100, 100])
-            upper_red1 = np.array([10, 255, 255])
-            lower_red2 = np.array([160, 100, 100])
-            upper_red2 = np.array([180, 255, 255])
+        # Create masks for both ranges
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
             
-            # Create masks for both ranges
-            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-            
-            # Combine the masks
-            mask = cv2.bitwise_or(mask1, mask2)
+        # Combine the masks
+        mask = cv2.bitwise_or(mask1, mask2)
 
-        # Split the image into a 3x3 grid
     height, width = mask.shape
-    grid_h, grid_w = height // 3, width // 3
+    column_w = width // 3
     
-    grid_percentages = []
+    column_percentages = []
     
-    for i in range(3):
-        for j in range(3):
-            # Extract the grid
-            grid = mask[i*grid_h:(i+1)*grid_h, j*grid_w:(j+1)*grid_w]
-            
-            # Calculate the percentage of the grid filled with the color
-            total_pixels = grid.size
-            colored_pixels = np.count_nonzero(grid)
-            percentage = colored_pixels / total_pixels
-            
-            grid_percentages.append(percentage)
+    for j in range(3):
+        # Extract the column
+        column = mask[:, j*column_w:(j+1)*column_w]
+        
+        # Calculate the percentage of the column filled with the color
+        total_pixels = column.size
+        colored_pixels = np.count_nonzero(column)
+        percentage = colored_pixels / total_pixels
+        column_percentages.append(percentage)
 
-    return grid_percentages
+    return column_percentages
 
 class ActorCritic(nn.Module):
     def __init__(self, state_size, action_size):
@@ -167,7 +155,7 @@ class RoboboEnv:
     def __init__(self, rob: IRobobo):
         self.rob = rob
         self.action_space = 2
-        self.observation_space = 9
+        self.observation_space = 3
         self.reset()
         self.rewards = []
         self.reward = 0
@@ -193,30 +181,12 @@ class RoboboEnv:
 
         self.rob.move_blocking(left_speed*50, right_speed*50, 100)
 
-        # Update state based on action (simplified)
         self.state = self.get_state()
 
         self.reward = self.get_reward()
 
-
-
-        # if self.food_consumed < self.rob.nr_food_collected():
-        #     self.reward += 0.2 * (self.rob.nr_food_collected() - self.food_consumed) * (0 if left_speed < 0 and right_speed < 0 else 1)
-        #     self.food_consumed = self.rob.nr_food_collected()
-
-        # IR values
-        # ir_values = self.rob.read_irs()
-        # ir_values = np.clip(ir_values, 0, 250)
-        # ir_values = ir_values / 250.0
-
-        # Check if done
-        # self.done = np.any(ir_values >= 1)
-        # if self.done:
-        #     self.reward = -1
         if self.steps > 100:
             self.done = True
-
-        # self.reward = np.clip(self.reward, -1, 1)
 
         self.rewards.append(self.reward)
         rewards_series = pd.Series(self.rewards)
@@ -239,8 +209,8 @@ class RoboboEnv:
         # GCV values
         i = self.rob.get_image_front()
         image = cv2.flip(i, -1)
-        if isinstance(self.rob, SimulationRobobo):
-            image = cv2.flip(image, 0)
+        # if isinstance(self.rob, SimulationRobobo):
+        #     image = cv2.flip(image, 0)
         cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
         green_values = process_image(self.rob, str(FIGRURES_DIR / "pic.png"), 'green')
         red_values = process_image(self.rob, str(FIGRURES_DIR / "pic.png"), 'red')
@@ -248,16 +218,15 @@ class RoboboEnv:
         return np.array(red_values, dtype=np.float32)
     
     def get_reward(self):
-        weights = [0.2, 1, 0.2,
-                   0.5, 2, 0.5,
-                   1.0, 3, 1.0] 
+        weights = [0.5,1,0.5] 
         
         reward = sum(w * p for w, p in zip(weights, self.state))
-        return reward
+        return reward - 1
 
 def run_all_actions(rob):
     env = RoboboEnv(rob)
     state_size = env.observation_space
+    print("fl ", state_size)
     action_size = env.action_space
     agent = PPOAgent(state_size, action_size)
     
