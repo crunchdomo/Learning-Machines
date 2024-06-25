@@ -12,25 +12,12 @@ from collections import deque
 from torch.distributions import Normal
 import cv2
 
-def process_image(image_path, colour='green'):
-    """
-    Parameters
-    ----------
-    image_path : str
-        The path to the image file.
-    Returns
-    -------
-    tuple
-        A tuple containing two float values:
-        - normalized_distance_bottom: Closeness to bottom of the image. Returns 1 at bottom, 0 at top.
-        - normalized_distance_side: Closeness to right of the image. Returns 1 at the right, 0 at the left.
-        - Returns 0 in both cases if no box is found.
-    """
+def process_image(rob, image_path, colour='green'):
     # Load the image
     image = cv2.imread(image_path)
 
     # Resize the image to speed up processing
-    scale_percent = 50  # percent of original size
+    scale_percent = 50
     width = int(image.shape[1] * scale_percent / 100)
     height = int(image.shape[0] * scale_percent / 100)
     dim = (width, height)
@@ -69,50 +56,25 @@ def process_image(image_path, colour='green'):
             # Combine the masks
             mask = cv2.bitwise_or(mask1, mask2)
 
-    # Display the mask for debugging
-    # cv2.imshow('Mask', mask)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
+        # Split the image into a 3x3 grid
+    height, width = mask.shape
+    grid_h, grid_w = height // 3, width // 3
+    
+    grid_percentages = []
+    
+    for i in range(3):
+        for j in range(3):
+            # Extract the grid
+            grid = mask[i*grid_h:(i+1)*grid_h, j*grid_w:(j+1)*grid_w]
+            
+            # Calculate the percentage of the grid filled with the color
+            total_pixels = grid.size
+            colored_pixels = np.count_nonzero(grid)
+            percentage = colored_pixels / total_pixels
+            
+            grid_percentages.append(percentage)
 
-    # Find contours in the mask
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    # Get image dimensions
-    image_height, image_width = resized_image.shape[:2]
-
-    closest_contour = None
-    min_distance_from_bottom = float('inf')
-
-    for contour in contours:
-        # Get the bounding box of the contour
-        x, y, w, h = cv2.boundingRect(contour)
-        box_bottom = y + h
-
-        # Calculate the distance to the bottom of the image
-        distance_from_bottom = image_height - box_bottom
-
-        if distance_from_bottom < min_distance_from_bottom:
-            min_distance_from_bottom = distance_from_bottom
-            closest_contour = contour
-
-    if closest_contour is not None:
-        # Get the bounding box of the closest contour
-        x, y, w, h = cv2.boundingRect(closest_contour)
-        box_bottom = y + h
-        box_center_x = x + w / 2
-
-        # Calculate the distance from the bottom of the image
-        distance_from_bottom = image_height - box_bottom
-
-        # Normalize the distance to a value between 0 and 1
-        normalized_distance_bottom = 1 - (distance_from_bottom / image_height)
-
-        # Normalize the horizontal position to a value between 0 and 1
-        normalized_distance_right = box_center_x / image_width
-
-        return normalized_distance_bottom, normalized_distance_right
-    else:
-        return 0, 0
+    return grid_percentages
 
 class ActorCritic(nn.Module):
     def __init__(self, state_size, action_size):
@@ -205,7 +167,7 @@ class RoboboEnv:
     def __init__(self, rob: IRobobo):
         self.rob = rob
         self.action_space = 2
-        self.observation_space = 8
+        self.observation_space = 9
         self.reset()
         self.rewards = []
         self.reward = 0
@@ -217,7 +179,7 @@ class RoboboEnv:
         if isinstance(self.rob, SimulationRobobo):
             self.rob.stop_simulation()
             self.rob.play_simulation()
-        self.rob.set_phone_tilt_blocking(120, 100)
+        self.rob.set_phone_tilt_blocking(100, 100)
         self.reward = 0
         self.steps = 0
         self.food_consumed = 0
@@ -234,35 +196,22 @@ class RoboboEnv:
         # Update state based on action (simplified)
         self.state = self.get_state()
 
-        # self.reward = self.state[1] - 1
+        self.reward = self.get_reward()
 
-        # done = self.state[1] == 1
-        # if done:
-        #     self.reward = 2
 
-        # IR = 0
-        # if self.state[0]> 0.1 and self.state[1] > 0.9:
-        #     IR = 0.5
-        # if self.state[0] > 0.9:
-        #     print[self.state[0]]
-        # # CV stuff
-        # self.reward = 1-self.state[1] + IR
 
-        # if self.state[1] == 1:
-        #     self.reward += self.state[3]
+        # if self.food_consumed < self.rob.nr_food_collected():
+        #     self.reward += 0.2 * (self.rob.nr_food_collected() - self.food_consumed) * (0 if left_speed < 0 and right_speed < 0 else 1)
+        #     self.food_consumed = self.rob.nr_food_collected()
 
         # IR values
-        ir_values = self.rob.read_irs()
-        ir_values = np.clip(ir_values, 0, 10000)
-        ir_values = ir_values / 10000.0
-
-        if self.food_consumed < self.rob.nr_food_collected():
-            self.reward += 0.2 * (self.rob.nr_food_collected() - self.food_consumed) * (0 if left_speed < 0 and right_speed < 0 else 1)
-            self.food_consumed = self.rob.nr_food_collected()
+        # ir_values = self.rob.read_irs()
+        # ir_values = np.clip(ir_values, 0, 250)
+        # ir_values = ir_values / 250.0
 
         # Check if done
-        # done = np.any(ir_values >= 0.8)
-        # if done:
+        # self.done = np.any(ir_values >= 1)
+        # if self.done:
         #     self.reward = -1
         if self.steps > 100:
             self.done = True
@@ -288,23 +237,23 @@ class RoboboEnv:
 
     def get_state(self):
         # GCV values
-        image = self.rob.get_image_front()
+        i = self.rob.get_image_front()
+        image = cv2.flip(i, -1)
         if isinstance(self.rob, SimulationRobobo):
             image = cv2.flip(image, 0)
         cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
-        green_values = process_image(str(FIGRURES_DIR / "pic.png"), 'green')
-        red_values = process_image(str(FIGRURES_DIR / "pic.png"), 'red')
+        green_values = process_image(self.rob, str(FIGRURES_DIR / "pic.png"), 'green')
+        red_values = process_image(self.rob, str(FIGRURES_DIR / "pic.png"), 'red')
 
-        # IR values
-        ir_values = self.rob.read_irs()
-        ir_values = np.clip(ir_values, 0, 10000)
-        ir_values = ir_values / 10000.0
-
-        # state_values = ir_values[[7,4,5,6]]
-        # state_values = image_values
-        # state_values = np.concatenate((ir_values[[7,4,5,6]], green_values))
-        state_values = np.concatenate((ir_values[[7,4,5,6]], green_values, red_values))
-        return np.array(state_values, dtype=np.float32)
+        return np.array(red_values, dtype=np.float32)
+    
+    def get_reward(self):
+        weights = [0.2, 1, 0.2,
+                   0.5, 2, 0.5,
+                   1.0, 3, 1.0] 
+        
+        reward = sum(w * p for w, p in zip(weights, self.state))
+        return reward
 
 def run_all_actions(rob):
     env = RoboboEnv(rob)
@@ -341,5 +290,5 @@ def run_all_actions(rob):
 
 
 # For Adam
-rob = SimulationRobobo()
-run_all_actions(rob)
+# rob = SimulationRobobo()
+# run_all_actions(rob)
