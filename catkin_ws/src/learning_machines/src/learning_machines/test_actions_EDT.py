@@ -181,7 +181,7 @@ def get_state(rob: IRobobo):
     state_values = np.concatenate((ir_values, image_values))
     return np.array(state_values, dtype=np.float32)
 
-def get_reward(action, old_state, new_state):
+def get_reward(action, old_state, new_state, left_speed, right_speed):
         reward = 0
         # modify as required for openCV values in state
         IR = new_state[:8]
@@ -216,6 +216,9 @@ def get_reward(action, old_state, new_state):
         # goal is to not punish for touching food but still account for hitting walls
         if np.sum(IR[[7,4,5,6]] > 0.8*200) >= 1:
             reward -= 50
+
+        if abs(left_speed)+abs(right_speed) < 50:
+            reward -= 10
 
         return reward
 
