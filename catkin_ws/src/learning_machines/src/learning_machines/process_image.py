@@ -1,88 +1,84 @@
 import numpy as np
 import cv2
+import matplotlib.pyplot as plt
 
-def process_image(image_path):
-    """
-    Parameters
-    ----------
-    image_path : str
-        The path to the image file.
-    Returns
-    -------
-    tuple
-        A tuple containing two float values:
-        - normalized_distance_bottom: Closeness to bottom of the image. Returns 1 at bottom, 0 at top.
-        - normalized_distance_side: Closeness to right of the image. Returns 1 at the right, 0 at the left.
-        - Returns 0 in both cases if no box is found.
-    """
+def process_image(image_path, colour='green'):
     # Load the image
     image = cv2.imread(image_path)
-
+    
     # Resize the image to speed up processing
-    scale_percent = 50  # percent of original size
+    scale_percent = 50 # percent of original size
     width = int(image.shape[1] * scale_percent / 100)
     height = int(image.shape[0] * scale_percent / 100)
     dim = (width, height)
     resized_image = cv2.resize(image, dim, interpolation=cv2.INTER_AREA)
-
+    
     # Convert the image to HSV color space
     hsv = cv2.cvtColor(resized_image, cv2.COLOR_BGR2HSV)
-
-    # Define range for green color and create a mask
-    lower_green = np.array([40, 100, 100])
-    # lower_green = np.array([35, 40, 40])
-    upper_green = np.array([85, 255, 255])
-    mask = cv2.inRange(hsv, lower_green, upper_green)
-
-    # Display the mask for debugging
-    # cv2.imshow('Mask', mask)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
-
-    # Find contours in the mask
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    # Get image dimensions
-    image_height, image_width = resized_image.shape[:2]
-
-    closest_contour = None
-    min_distance_from_bottom = float('inf')
-
-    for contour in contours:
-        # Get the bounding box of the contour
-        x, y, w, h = cv2.boundingRect(contour)
-        box_bottom = y + h
-
-        # Calculate the distance to the bottom of the image
-        distance_from_bottom = image_height - box_bottom
-
-        if distance_from_bottom < min_distance_from_bottom:
-            min_distance_from_bottom = distance_from_bottom
-            closest_contour = contour
-
-    if closest_contour is not None:
-        # Get the bounding box of the closest contour
-        x, y, w, h = cv2.boundingRect(closest_contour)
-        box_bottom = y + h
-        box_center_x = x + w / 2
-
-        # Calculate the distance from the bottom of the image
-        distance_from_bottom = image_height - box_bottom
-
-        # Normalize the distance to a value between 0 and 1
-        normalized_distance_bottom = 1 - (distance_from_bottom / image_height)
-
-        # Normalize the horizontal position to a value between 0 and 1
-        normalized_distance_right = box_center_x / image_width
-
-        return normalized_distance_bottom, normalized_distance_right
-    else:
-        return 0, 0
+    
+    if colour == 'green':
+        # Define range for green color and create a mask
+        lower_green = np.array([40, 100, 100])
+        upper_green = np.array([85, 255, 255])
+        mask = cv2.inRange(hsv, lower_green, upper_green)
+    elif colour == 'red':
+        # Define range for red color and create a mask
+        lower_red1 = np.array([0, 100, 100])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([160, 100, 100])
+        upper_red2 = np.array([180, 255, 255])
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        mask = cv2.bitwise_or(mask1, mask2)
+    
+    height, width = mask.shape
+    column_w = width // 3
+    column_percentages = []
+    
+    # Create a copy of the resized image for drawing
+    output_image = resized_image.copy()
+    
+    for j in range(3):
+        # Extract the column
+        column = mask[:, j*column_w:(j+1)*column_w]
+        
+        # Calculate the percentage of the column filled with the color
+        total_pixels = column.size
+        colored_pixels = np.count_nonzero(column)
+        percentage = colored_pixels / total_pixels
+        column_percentages.append(percentage)
+        
+        # Draw rectangle and text on the output image
+        cv2.rectangle(output_image, (j*column_w, 0), ((j+1)*column_w, height), (0, 255, 0), 2)
+        cv2.putText(output_image, f"{percentage:.2f}", (j*column_w + 10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    
+    return column_percentages, output_image, mask
 
 # Example usage:
-# image_path = "test_photo.png"
-# normalized_distance_bottom, normalized_distance_vertical = process_image(image_path)
+image_path = "test_photo.png"
+color_percentages, output_image, mask = process_image(image_path, colour='green')
 
-# if normalized_distance_bottom is not None and normalized_distance_vertical is not None:
-#     print(f"Normalized distance from the bottom: {normalized_distance_bottom:.2f}")
-#     print(f"Normalized distance from the vertical center: {normalized_distance_vertical:.2f}")
+# Display results
+plt.figure(figsize=(15, 5))
+
+plt.subplot(131)
+plt.imshow(cv2.cvtColor(output_image, cv2.COLOR_BGR2RGB))
+plt.title("Image with Columns and Percentages")
+
+plt.subplot(132)
+plt.imshow(mask, cmap='gray')
+plt.title("Mask")
+
+plt.subplot(133)
+plt.bar(range(3), color_percentages)
+plt.title("Color Percentages")
+plt.xlabel("Column")
+plt.ylabel("Percentage")
+
+plt.tight_layout()
+plt.show()
+
+print("Color percentages for each grid (0 to 1):")
+for i, percentage in enumerate(color_percentages):
+    print(f"Grid {i}: {percentage:.2f}")
