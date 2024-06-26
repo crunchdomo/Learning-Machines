@@ -190,6 +190,18 @@ class RoboboEnv:
         self.state = self.get_state()
 
         self.reward = self.get_reward()
+        
+        # emd when reach green
+        if self.reward >= 0.5 and self.target_colour == 'green':        
+            self.reward = 1 + (1 - self.steps * 0.01)
+            print("DID IT!!!!")
+            self.done = True
+
+        # switch to find red
+        if self.reward >= 0.2 and self.target_colour == 'red':
+                self.reward = 1
+                self.target_colour = 'green'
+                print("looking for Greeeeen!!!")
 
         if self.steps > 100:
             self.done = True
@@ -224,22 +236,14 @@ class RoboboEnv:
     
     def get_reward(self):
         weights = [0.5,1,0.5] 
-        
-        reward = sum(w * p for w, p in zip(weights, self.state))
-
-        # if self.rob.remote_get_food_collected() == 1:
-        #     self.target_colour = 'green'
-        #     print("looking for Greeeeen!!!")
-
-        return reward
-
+        return sum(w * p for w, p in zip(weights, self.state))
 
 best_model_path = RESULTS_DIR / 'best_model.pth'
 
 def train(rob):
     env = RoboboEnv(rob)
     state_size = env.observation_space
-    print("awunga")
+    print("plot")
     action_size = env.action_space
     agent = PPOAgent(state_size, action_size)
     agent = torch.load(best_model_path)
@@ -247,12 +251,15 @@ def train(rob):
     
     episodes = 1000
 
-    best = -np.inf
+
+    best = 3
+    reward_list = []
     for episode in range(episodes):
         state = env.reset()
         done = False
         total_reward = 0
         states, actions, rewards, next_states, dones = [], [], [], [], []
+
 
         while not done:
             action = agent.act(state)
@@ -267,9 +274,12 @@ def train(rob):
             state = next_state
             total_reward += reward
 
+
             if len(states) >= agent.batch_size:
                 agent.update(states, actions, rewards, next_states, dones)
                 states, actions, rewards, next_states, dones = [], [], [], [], []
+
+        reward_list.append(total_reward)
 
         if total_reward > best:
             best = total_reward
@@ -278,6 +288,15 @@ def train(rob):
 
         if episode % 10 == 0:
             print(f"Episode {episode}, Total Reward: {total_reward}")
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(reward_list, label='Total reward per episode')
+        plt.xlabel('Episode')
+        plt.ylabel('Reward')
+        plt.legend()
+        plt.title('Reward over Time')
+        plt.savefig(FIGURES_DIR / f'total_rewards.png')
+        plt.close()
 
 def test(rob):
     env = RoboboEnv(rob)
