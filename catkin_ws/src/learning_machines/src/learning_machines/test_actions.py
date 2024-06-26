@@ -182,7 +182,10 @@ class RoboboEnv:
         self.steps += 1
         left_speed, right_speed = action
 
-        self.rob.move_blocking(left_speed*50, right_speed*50, 100)
+        left_speed = int(np.clip(left_speed, 0, 1)*50)
+        right_speed = int(np.clip(right_speed, 0, 1)*50)
+
+        self.rob.move_blocking(left_speed, right_speed, 100)
 
         self.state = self.get_state()
 
