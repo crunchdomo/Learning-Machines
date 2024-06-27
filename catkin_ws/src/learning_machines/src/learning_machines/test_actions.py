@@ -185,14 +185,14 @@ class RoboboEnv:
         left_speed = int(np.clip(left_speed, 0, 1)*50)
         right_speed = int(np.clip(right_speed, 0, 1)*50)
 
-        self.rob.move_blocking(left_speed, right_speed, 100)
+        self.rob.move_blocking(left_speed, right_speed, 400)
 
         self.state = self.get_state()
 
         self.reward = self.get_reward()
         
-        # emd when reach green
-        if self.reward >= 0.5 and self.target_colour == 'green':        
+        # end when reach green
+        if self.reward >= 0.4 and self.target_colour == 'green':        
             self.reward = 1 + (1 - self.steps * 0.01)
             print("DID IT!!!!")
             self.done = True
@@ -203,7 +203,9 @@ class RoboboEnv:
                 self.target_colour = 'green'
                 print("looking for Greeeeen!!!")
 
-        if self.steps > 100:
+        ir_readings = np.array(self.rob.read_irs())
+
+        if (self.steps > 100) or np.any(ir_readings > 250.0):
             self.done = True
 
         self.rewards.append(self.reward)
@@ -325,7 +327,7 @@ def test(rob):
     print(f"Test episode completed. Total Reward: {total_reward}")
 
 def run_all_actions(rob):
-    train(rob)
+    test(rob)
 
 # For Adam
 # rob = SimulationRobobo()
