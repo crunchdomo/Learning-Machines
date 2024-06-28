@@ -13,7 +13,7 @@ from itertools import count
 import numpy as np
 import os
 import matplotlib.pyplot as plt
-from data_files import FIGRURES_DIR
+
 from robobo_interface import (
     IRobobo,
     SimulationRobobo,
@@ -32,9 +32,70 @@ import cv2
 import json
 
 
+from pathlib import Path
+RESULTS_DIR = Path("/root/results")
+FIGURES_DIR = RESULTS_DIR / "figures"
+FIGURES_DIR.mkdir(exist_ok=True)
+
+
+
+
+def process_image(image_path, colour='green'):
+    # Load the image
+    image = cv2.imread(image_path)
+
+    # Resize the image to speed up processing
+    scale_percent = 50
+    width = int(image.shape[1] * scale_percent / 100)
+    height = int(image.shape[0] * scale_percent / 100)
+    dim = (width, height)
+    resized_image = cv2.resize(image, dim, interpolation=cv2.INTER_AREA)
+
+    # Convert the image to HSV color space
+    hsv = cv2.cvtColor(resized_image, cv2.COLOR_BGR2HSV)
+
+    if colour == 'green':
+        # Define range for green color and create a mask
+        lower_green = np.array([40, 100, 100])
+        # lower_green = np.array([35, 40, 40])
+        upper_green = np.array([85, 255, 255])
+        mask = cv2.inRange(hsv, lower_green, upper_green)
+
+    if colour == 'red':
+        # Define range for red color and create a mask
+        # Red wraps around the HSV color space, so we need two ranges
+        lower_red1 = np.array([0, 100, 100])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([160, 100, 100])
+        upper_red2 = np.array([180, 255, 255])
+            
+        # Create masks for both ranges
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+            
+        # Combine the masks
+        mask = cv2.bitwise_or(mask1, mask2)
+
+    height, width = mask.shape
+    column_w = width // 3
+    
+    column_percentages = []
+    
+    for j in range(3):
+        # Extract the column
+        column = mask[:, j*column_w:(j+1)*column_w]
+        
+        # Calculate the percentage of the column filled with the color
+        total_pixels = column.size
+        colored_pixels = np.count_nonzero(column)
+        percentage = colored_pixels / total_pixels
+        column_percentages.append(percentage)
+
+    return column_percentages
+
 # Define the Decision Tree model
 
-num_variables = 10
+num_variables = 3
 
 class Node:
     def __init__(self, feature: int = None, split_val: float = None, action: list = None):
@@ -65,17 +126,17 @@ class DecisionTree:
         root_feature = random.choice(range(num_variables)) # randomly choose a sensor
         self.nodes[1] = Node(
             feature=root_feature,
-            split_val=random.uniform(0, 75)
+            split_val=random.uniform(0, 1)
         )
     
     def add_node(self, par_ind: int, node_type: str):
         if node_type == "leaf":
-            new_node = Node(action=[random.uniform(-100, 100),random.uniform(-100, 100)])
+            new_node = Node(action=[random.uniform(-4000, 4000),random.uniform(-4000, 4000)])
         elif node_type == "split":
             feature = random.choice(range(num_variables)) # randomly choose a sensor
             new_node = Node(
                 feature=feature,
-                split_val=random.uniform(0, 75)
+                split_val=random.uniform(0, 1)
             )
         
         # check if left child exists
@@ -166,69 +227,39 @@ def generate_random(max_depth: int, split_p: float):
     return ret
 
 # Define helper functions
-def get_state(rob: IRobobo):
-    # IR values
-    ir_values = rob.read_irs()
-    ir_values = np.clip(ir_values, 0, 200)
 
-    # GCV values
-    image = rob.get_image_front()
-    if isinstance(rob, SimulationRobobo):
-        image = cv2.flip(image, 0)
-    cv2.imwrite(str(FIGRURES_DIR / "pic.png"), image)
-    image_values = [100*v for v in pic_calcs(str(FIGRURES_DIR / "pic.png"))]
 
-    state_values = np.concatenate((ir_values, image_values))
-    return np.array(state_values, dtype=np.float32)
+def get_state(rob, target_colour):
+    #ir_values = rob.read_irs()
+    #ir_values = np.clip(ir_values, 0, 10000)
+    #ir_values = ir_values / 10000.0
+    # CV values
+    i = rob.get_image_front()
+    image = cv2.flip(i, -1)
+    # if isinstance(self.rob, SimulationRobobo):
+    #     image = cv2.flip(image, 0)
+    cv2.imwrite(str(FIGURES_DIR / "pic.png"), image)
+    picture_data = process_image(str(FIGURES_DIR / "pic.png"), target_colour)
+    #state_values = np.concatenate((picture_data, ir_values[[7,4,5,6]]))
+    #return np.array(state_values, dtype=np.float32)
+    return np.array(picture_data, dtype=np.float32)
 
-def get_reward(action, old_state, new_state, left_speed, right_speed):
-        reward = 0
-        # modify as required for openCV values in state
-        IR = new_state[:8]
-        old_CV = old_state[8:]
-        new_CV = new_state[8:]
+    
+def get_reward(state):
+    weights = [0.5,1,0.5] 
+    return sum(w * p for w, p in zip(weights, state[:3])) 
 
-        '''
-        If rob moves closer to block, reward
-        If block reaches bottom of cam and stays there, fine.
-        If block moves away, punish
-        '''
-        # calc for bottom dist
-        if old_CV[0] < new_CV[0]:
-            reward += new_CV[0] * 0.1
-        elif new_CV[0] == 100 and old_CV[0] == 100:
-            reward += 10
-        elif old_CV[0] > new_CV[0]:
-            reward += (new_CV[0] - old_CV[0]) * 0.5
 
-        # calc for side to side dist
-        old_distance = abs(old_CV[1] - 50)
-        new_distance = abs(new_CV[1] - 50)
-
-        '''
-        Reward if block gets closer to middle
-        Punish if it gets further from middle
-        '''
-        reward += (old_distance - new_distance) * 0.1  
-
-        # reward += (action[0] + action[1]) * 5
-        # Checks if x values are BIG. 
-        # goal is to not punish for touching food but still account for hitting walls
-        if np.sum(IR[[7,4,5,6]] > 0.8*200) >= 1:
-            reward -= 50
-
-        if abs(left_speed)+abs(right_speed) < 50:
-            reward -= 10
-
-        return reward
-
-def fitness(individual: DecisionTree, rob: IRobobo): # given a tree, make simulation
+def fitness(individual: DecisionTree, rob: IRobobo ): # given a tree, make simulation
     if isinstance(rob, SimulationRobobo):
         rob.play_simulation()
         rob.set_phone_tilt_blocking(100, 100)
 
-    state = get_state(rob)
+    
     total_reward = 0
+    done = False
+    target_colour = 'red'
+    state = get_state(rob,target_colour)
 
     for t in count():
         action = individual.select_action(state)  
@@ -236,15 +267,25 @@ def fitness(individual: DecisionTree, rob: IRobobo): # given a tree, make simula
         left_speed = action[0]
         right_speed = action[1]
 
-        old_state = get_state(rob)
         rob.move_blocking(left_speed, right_speed, 100)
-        next_state = get_state(rob)
-            
-        reward = get_reward(action, old_state, next_state)
-        total_reward += reward
-        state = next_state
+        state = get_state(rob, target_colour)
+        reward = get_reward(state)
+        
+        if reward >= 0.5 and target_colour == 'green':        
+            reward = 1 + (1 - t*0.01)
+            # print("DID IT!!!!")
+            done = True
 
-        if t > 50:
+        # switch to find red
+        if reward >= 0.2 and target_colour == 'red':
+            reward = 1
+            target_colour = 'green'
+            #print("looking for Greeeeen!!!")
+
+        total_reward += reward
+
+
+        if t > 150 or done==True:
             if isinstance(rob, SimulationRobobo):
                 rob.stop_simulation()
             break
@@ -294,8 +335,8 @@ def crossover(p1: DecisionTree, p2: DecisionTree):
     
     return c1, c2
 
-def mutate(tree: DecisionTree):
-    for _ in range(5):
+def mutate(tree: DecisionTree, scale=1):
+    for _ in range(int(2*scale)):
         # select a random node
         valid = [i for i in range(len(tree.nodes)) if tree.nodes[i] is not None]
         ind = random.choice(valid)
@@ -305,12 +346,12 @@ def mutate(tree: DecisionTree):
             feature = random.choice(range(num_variables))
             tree.nodes[ind] = Node(
                 feature = feature, 
-                split_val = random.uniform(0, 75)
+                split_val = random.uniform(0, 1)
             )
         else:
             # if selected node is a leaf node
             old_action = tree.nodes[ind].action
-            tree.nodes[ind] = Node(action = [value+random.uniform(-20, 20) for value in old_action])
+            tree.nodes[ind] = Node(action = [value+random.uniform(-40*scale, 40*scale) for value in old_action])
 
 def plot_rewards(average_fitnesses, max_fitnesses):
     plt.figure()
@@ -318,7 +359,7 @@ def plot_rewards(average_fitnesses, max_fitnesses):
     plt.xlabel('Generation')
     plt.ylabel('Average fitness')
     plt.title('Average fitness per Generation')
-    plt.savefig(FIGRURES_DIR / f'average_fitnesses_EDT.png')
+    plt.savefig(FIGURES_DIR / f'average_fitnesses_EDT.png')
     plt.close()
 
     plt.figure()
@@ -326,13 +367,25 @@ def plot_rewards(average_fitnesses, max_fitnesses):
     plt.xlabel('Generation')
     plt.ylabel('Max fitness')
     plt.title('Max fitness per Generation')
-    plt.savefig(FIGRURES_DIR / f'max_fitnesses_EDT.png')
+    plt.savefig(FIGURES_DIR / f'max_fitnesses_EDT.png')
     plt.close()
 
-def run_training_simulation(max_depth: int, split_p: float, population_size: int, cross_p: float, mut_p: float, generation_cnt: int, rob):
+def run_training_simulation(max_depth: int, split_p: float, population_size: int, cross_p: float, mut_p: float, generation_cnt: int, rob, target_colour = 'red',continue_training=True):
     # initial population
     n = population_size
-    population = [generate_random(max_depth, split_p) for _ in range(n)]
+    n_previous = n
+    if continue_training==True:
+        population = []
+        for i in range(n_previous):
+            model_path = str(FIGURES_DIR)+'/best.model.EDT.top'+str(i+1)
+            model = DecisionTree.load_from_file(model_path)
+            population.append(model)
+            print('model loaded'+str(i))
+    else:
+        population = [generate_random(max_depth, split_p) for _ in range(n)]
+
+    
+
     average_fitnesses = []
     max_fitnesses = []
 
@@ -341,16 +394,23 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
         # select the best individuals from population
         fitnesses = [fitness(tree,rob) for tree in tqdm(population)]
         sorted_population = [tree for _, tree in sorted(zip(fitnesses, population), key=lambda x: x[0], reverse=True)]
-        top_5_individuals = sorted_population[:5]
-        for i in range(5):
-            top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
-
-
-
+        top_n_individuals = sorted_population[:n_previous]
+        for i in range(n_previous):
+            top_n_individuals[i].save_to_file(str(FIGURES_DIR)+'/best.model.EDT.top'+str(i+1))
         
+        # time-dependent parameter control
+        if gen <= 20:
+            scale_cross = (20-gen)/100 # from +20% to +0%
+            scale_mut = 10*(20-gen)/100 + 1 # from *300% to *100%
+        else:
+            scale_cross = 0
+            scale_mut = 1
+
+
         # selection + crossover
         new_pop = []
-        for _ in range(int(n * cross_p / 2)):
+        
+        for _ in range(int(n * (cross_p + scale_cross) / 2)):
             p1, p2 = selection(population, fitnesses, 3) # third paramter can be changed
             c1, c2 = crossover(p1, p2)
             new_pop.extend((c1, c2))
@@ -362,9 +422,12 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
         )
         new_pop.extend(fp[i][1] for i in range(n - len(new_pop)))
         
-        # mutation
-        for i in random.sample(range(n), int(n * mut_p)):
-            mutate(new_pop[i])
+        # adaptive mutation
+        for i in random.sample(range(n), int(n * mut_p * scale_mut)): # from 3*mut_p to 1*mut_p
+            if i < n*cross_p/2:
+                mutate(new_pop[i],scale_mut)
+            else: # elite
+                mutate(new_pop[i],1)
         
         population = new_pop
         
@@ -389,18 +452,22 @@ def run_training_simulation(max_depth: int, split_p: float, population_size: int
     final_fitnesses = [fitness(tree,rob) for tree in population]
     sorted_population = [tree for _, tree in sorted(zip(fitnesses, population), key=lambda x: x[0], reverse=True)]
 
-    top_5_individuals = sorted_population[:5]
-    for i in range(5):
-        top_5_individuals[i].save_to_file(str(FIGRURES_DIR)+'/best.model.EDT.top'+str(i+1))
+    top_n_individuals = sorted_population[:n_previous]
+    for i in range(n_previous):
+        top_n_individuals[i].save_to_file(str(FIGURES_DIR)+'/best.model.EDT.top'+str(i+1))
 
     return population, final_fitnesses
 
 
-def run_trained_model(rob: IRobobo, model_path = 'best.model.EDT.top1'):
-    tree = DecisionTree.load_from_file(model_path)
-    if os.path.exists(model_path):
-        fitness = fitness(tree,rob)
-        print('fitness='+fitness)
+def run_trained_model(rob: IRobobo):
+    n = 50
+    #for i in range(n):
+    for i in range(n):
+        model_path = str(FIGURES_DIR)+'/best.model.EDT.top'+str(i+1)
+        model = DecisionTree.load_from_file(model_path)
+        fitness_ = fitness(model,rob)
+        print('model tested: '+str(i+1))
+
         
     else:
         print("No saved model found. Please train the model first.")
@@ -414,13 +481,77 @@ rob = SimulationRobobo()
 
 
 # Toggle between testing or running a model
-train = True
+train = False
 def run_all_actions(rob: IRobobo):
     if train:
-        population, final_fitnesses = run_training_simulation(8, 0.6, 70, 0.8, 0.3, 50, rob)
+        population, final_fitnesses = run_training_simulation(6, 0.5, 50, 0.7, 0.2, 50, rob, continue_training=False)
+
         # max_depth: int, split_p: float, population_size: int, cross_p: float, mut_p: float, generation_cnt: int
 
     else:
-        run_trained_model(rob, model_path = str(FIGRURES_DIR)+'best.model.EDT.top1')
+        run_trained_model(rob)
 
 
+
+
+
+
+# discarded
+
+
+def get_state_task2(rob: IRobobo):
+    # IR values
+    ir_values = rob.read_irs()
+    ir_values = np.clip(ir_values, 0, 200)
+
+    # GCV values
+    image = rob.get_image_front()
+    if isinstance(rob, SimulationRobobo):
+        image = cv2.flip(image, 0)
+    cv2.imwrite(str(FIGURES_DIR / "pic.png"), image)
+    image_values = [100*v for v in pic_calcs(str(FIGURES_DIR / "pic.png"))]
+
+    state_values = np.concatenate((ir_values, image_values))
+    return np.array(state_values, dtype=np.float32)
+
+
+def get_reward_task2(action, old_state, new_state, left_speed, right_speed):
+        reward = 0
+        # modify as required for openCV values in state
+        IR = new_state[:8]
+        old_CV = old_state[8:]
+        new_CV = new_state[8:]
+
+        '''
+        If rob moves closer to block, reward
+        If block reaches bottom of cam and stays there, fine.
+        If block moves away, punish
+        '''
+        # calc for bottom dist
+        if old_CV[0] < new_CV[0]:
+            reward += new_CV[0] * 0.1
+        elif new_CV[0] == 100 and old_CV[0] == 100:
+            reward += 10
+        elif old_CV[0] > new_CV[0]:
+            reward += (new_CV[0] - old_CV[0]) * 0.5
+
+        # calc for side to side dist
+        old_distance = abs(old_CV[1] - 50)
+        new_distance = abs(new_CV[1] - 50)
+
+        '''
+        Reward if block gets closer to middle
+        Punish if it gets further from middle
+        '''
+        reward += (old_distance - new_distance) * 0.1  
+
+        # reward += (action[0] + action[1]) * 5
+        # Checks if x values are BIG. 
+        # goal is to not punish for touching food but still account for hitting walls
+        if np.sum(IR[[7,4,5,6]] > 0.8*200) >= 1:
+            reward -= 50
+
+        if abs(left_speed)+abs(right_speed) < 50:
+            reward -= 10
+
+        return reward
